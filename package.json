@@ -1,0 +1,50 @@
+{
+  "name": "freebuff-computer",
+  "version": "0.1.0",
+  "description": "Computer Use for Freebuff agents — see and operate the computer the agent runs on. Codex-style MCP server.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "fbc": "dist/cli.js",
+    "freebuff-computer": "dist/cli.js"
+  },
+  "main": "dist/server.js",
+  "exports": {
+    ".": "./dist/server.js",
+    "./contract": "./dist/contract.js"
+  },
+  "files": [
+    "dist",
+    "agents",
+    "skills",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test",
+    "prepare": "npm run build",
+    "server": "node dist/cli.js server"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  },
+  "keywords": [
+    "freebuff",
+    "computer-use",
+    "mcp",
+    "agent",
+    "automation",
+    "accessibility"
+  ]
+}

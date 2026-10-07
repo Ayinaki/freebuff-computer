@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "freebuff-computer": {
+      "command": "node",
+      "args": ["dist/cli.js", "server"]
+    }
+  }
+}
