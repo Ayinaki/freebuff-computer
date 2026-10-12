@@ -1,5 +1,5 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { Tool } from '@modelcontextprotocol/sdk/types.js'
 import { COMPUTER_TOOLS } from './contract.js'
 import { driverCommand, platformLabel } from './config.js'
@@ -23,6 +23,7 @@ export interface ContractMismatch {
 }
 
 export interface DriverStatus {
+  inputMode?: string
   connected: boolean
   command: string
   serverName?: string
@@ -59,6 +60,7 @@ export class ComputerDriver {
   status(): DriverStatus {
     const { command, args } = driverCommand()
     return {
+      inputMode: process.platform === 'win32' && !process.env.FBC_DRIVER_CMD ? (process.env.FBC_INPUT_MODE ?? 'background') : 'external-driver',
       connected: this.isConnected,
       command: [command, ...args].join(' '),
       serverName: this.client?.getServerVersion()?.name,
@@ -87,6 +89,7 @@ export class ComputerDriver {
       command,
       args,
       stderr: 'pipe',
+      env: backgroundTypingEnvironment(),
       // A single accessibility snapshot can be many megabytes. The SDK default
       // is 10 MB, which would drop the connection mid-session on a large app.
       maxBufferSize: 64 * 1024 * 1024,
@@ -108,8 +111,7 @@ export class ComputerDriver {
       const handle = setTimeout(() => {
         reject(
           new Error(
-            `Timed out after ${this.connectTimeoutMs}ms starting the computer-use driver (${command}). ` +
-              'Is it installed? Run: npm install -g open-computer-use',
+            `Timed out after ${this.connectTimeoutMs}ms starting the computer-use driver (${command}).`,
           ),
         )
       }, this.connectTimeoutMs)
@@ -132,8 +134,11 @@ export class ComputerDriver {
   private decorateStartError(error: unknown): Error {
     const message = error instanceof Error ? error.message : String(error)
     const hint =
-      '\n\nFreebuff Computer needs the computer-use driver on PATH.\n' +
-      '  Install it once:  npm install -g open-computer-use\n' +
+      '\n\nFreebuff Computer could not start its configured driver.\n' +
+      (process.platform === 'win32' && !process.env.FBC_DRIVER_CMD
+        ? '  Reinstall the package, or rebuild a source checkout: npm run build (Go 1.22+).\n'
+        : process.env.FBC_DRIVER_CMD ? '  Check the FBC_DRIVER_CMD override and its executable path. External ocu installations use: npm install -g open-computer-use. Clear the override to use the bundled Windows driver.\n'
+        : '  Install it once:  npm install -g open-computer-use\n') +
       '  Then verify:      fbc doctor\n' +
       `  Platform detected: ${platformLabel()}`
     return new Error(`${message}${hint}`)
@@ -208,5 +213,20 @@ export class ComputerDriver {
     this.transport = null
     this.tools = []
     if (transport) await transport.close().catch(() => {})
+  }
+}
+
+/** Only our bundled driver guarantees AutoSetFocus=false for value mutations. */
+export function backgroundTypingEnvironment(
+  platform: string = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, string> | undefined {
+  if (platform !== 'win32' || env.FBC_DRIVER_CMD) return undefined
+  if (env.FBC_INPUT_MODE && !['background', 'foreground'].includes(env.FBC_INPUT_MODE))
+    throw new Error('FBC_INPUT_MODE must be background or foreground')
+  return { ...getDefaultEnvironment(),
+    FBC_INPUT_MODE: env.FBC_INPUT_MODE ?? 'background',
+    OPEN_COMPUTER_USE_WINDOWS_ALLOW_UIA_TEXT_FALLBACK:
+      env.OPEN_COMPUTER_USE_WINDOWS_ALLOW_UIA_TEXT_FALLBACK ?? '1',
   }
 }

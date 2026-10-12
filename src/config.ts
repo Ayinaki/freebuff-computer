@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 /**
  * Everything Freebuff Computer writes lives under one directory so a user can
@@ -99,6 +100,9 @@ export function driverCommand(): { command: string; args: string[] } {
   if (override) {
     const parts = override.split(' ').filter(Boolean)
     return { command: parts[0] ?? 'ocu', args: parts.slice(1) }
+  }
+  if (process.platform === 'win32') {
+    return { command: fileURLToPath(new URL(`./native/win32-${process.arch}/open-computer-use.exe`, import.meta.url)), args: ['mcp'] }
   }
   return { command: 'ocu', args: ['mcp'] }
 }

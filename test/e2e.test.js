@@ -23,6 +23,7 @@ const CODEX_TOOLS = [
 ]
 
 function driverOnPath() {
+  if (process.platform === 'win32' && existsSync(join(ROOT,'dist','native',`win32-${process.arch}`,'open-computer-use.exe'))) return true
   const exts = process.platform === 'win32' ? ['', '.cmd', '.exe', '.bat'] : ['']
   for (const dir of (process.env.PATH ?? '').split(delimiter)) {
     if (!dir) continue
@@ -46,7 +47,7 @@ function startServer(env = {}) {
   const stateDir = mkdtempSync(join(tmpdir(), 'fbc-test-'))
   const child = spawn(process.execPath, [CLI, 'server'], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, FBC_STATE_DIR: stateDir, ...env },
+    env: { ...process.env, FBC_STATE_DIR: stateDir, FBC_OVERLAY: '0', ...env },
   })
 
   let buffer = ''
@@ -166,7 +167,7 @@ test('initializes and advertises the Codex-compatible tool surface', async () =>
     }
     assert.ok(names.includes('computer_doctor'))
     assert.ok(names.includes('computer_policy'))
-    assert.equal(names.length, 11)
+    assert.deepEqual(names.slice().sort(), [...CODEX_TOOLS, 'computer_doctor', 'computer_policy', 'exec_cua_subset', 'computer_session'].sort())
 
     for (const tool of listed) {
       assert.ok(tool.description && tool.description.length > 20, `${tool.name} needs a description`)

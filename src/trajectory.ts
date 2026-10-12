@@ -1,10 +1,11 @@
 import { appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { stateSubdir, type FbcConfig } from './config.js'
+import { activityLabel, type Activity, type OverlaySink, type Target } from './overlay.js'
 
 export interface TrajectoryEntry {
   ts: string
-  kind: 'tool_call' | 'tool_result' | 'note'
+  kind: 'tool_call' | 'tool_result' | 'note' | 'activity'
   tool?: string
   /** Truncated arguments, or the reason a call was refused. */
   args?: unknown
@@ -24,7 +25,7 @@ export class TrajectoryRecorder {
   readonly path: string
   private readonly enabled: boolean
 
-  constructor(config: FbcConfig, sessionId: string) {
+  constructor(config: FbcConfig, sessionId: string, private readonly overlay?: OverlaySink) {
     this.enabled = config.recordTrajectory
     this.path = join(stateSubdir('trajectories'), `${sessionId}.jsonl`)
   }
@@ -40,6 +41,15 @@ export class TrajectoryRecorder {
 
   note(message: string): void {
     this.record({ ts: new Date().toISOString(), kind: 'note', result: message })
+  }
+
+  async activity(phase: Activity['phase'], tool: string, args: Record<string, unknown>, target: Target): Promise<void> {
+    // A window title is used only for private native identity matching, never
+    // displayed or recorded. Typed text, key payloads and node labels stay out.
+    const event: Activity = { ts: new Date().toISOString(), tool, phase, label: activityLabel(tool, phase), app: typeof args['app'] === 'string' ? args['app'] : undefined, ...target }
+    this.record({ ts: event.ts, kind: 'activity', tool, result: { ...event, ...(event.window ? {window: {...event.window, title: undefined}} : {}) } })
+    try { await this.overlay?.send(event) }
+    catch (error) { this.note(`Overlay unavailable: ${error instanceof Error ? error.message : String(error)}`) }
   }
 }
 

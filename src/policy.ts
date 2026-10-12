@@ -1,5 +1,6 @@
 import { ALWAYS_BLOCKED_KEYS, BLOCKED_TEXT_PATTERNS, findTool } from './contract.js'
 import type { FbcConfig } from './config.js'
+import { parseCuaSubset, type CuaPlan } from './cua-subset.js'
 
 export interface PolicyDecision {
   allowed: boolean
@@ -10,6 +11,9 @@ export interface PolicyDecision {
     | 'app-not-allowed'
     | 'audit-mode-read-only'
     | 'unknown-tool'
+    | 'invalid-cua-subset'
+    | 'invalid-session'
+    | 'invalid-window-selector'
   reason?: string
 }
 
@@ -20,10 +24,13 @@ function normalizeKey(key: string): string {
 }
 
 function matchApp(app: string, allowed: string[]): boolean {
-  const needle = app.toLowerCase()
+  const selector = /^(.+)@window:([1-9][0-9]*):[1-9][0-9]*:[1-9][0-9]*$/.exec(app)
+  // Window handles and creation timestamps are not app identities. The driver
+  // independently verifies the claimed process name/PID before accessing a window.
+  const needle = (selector?.[1] ?? app).toLowerCase()
   return allowed.some((entry) => {
     const candidate = entry.trim().toLowerCase()
-    return candidate.length > 0 && needle.includes(candidate)
+    return candidate.length > 0 && (needle.includes(candidate) || selector?.[2] === candidate)
   })
 }
 
@@ -38,8 +45,15 @@ export function checkAction(
 ): PolicyDecision {
   const tool = findTool(toolName)
   if (!tool) return { allowed: false, code: 'unknown-tool', reason: `Unknown tool: ${toolName}` }
+  if (toolName === 'exec_cua_subset') return checkCuaSubset(args['code'], config).decision
+  if (toolName === 'computer_session' && (typeof args['action'] !== 'string' || !['begin', 'end', 'status'].includes(args['action']) || Object.keys(args).some(key => key !== 'action'))) {
+    return { allowed: false, code: 'invalid-session', reason: 'computer_session accepts only action: "begin", "end", or "status".' }
+  }
 
   const app = typeof args['app'] === 'string' ? args['app'] : undefined
+  if (app?.includes('@window:') && !/^.+@window:[1-9][0-9]*:[1-9][0-9]*:[1-9][0-9]*$/.test(app)) {
+    return { allowed: false, code: 'invalid-window-selector', reason: 'Invalid window selector. Copy the exact app selector from list_apps.' }
+  }
 
   // Hard blocks apply in every mode, including `open`.
   if (toolName === 'press_key' && typeof args['key'] === 'string') {
@@ -84,6 +98,23 @@ export function checkAction(
   }
 
   return ALLOW
+}
+
+/** Preflight the complete, statically enumerable batch. No driver is involved. */
+export function checkCuaSubset(code: unknown, config: FbcConfig): { decision: PolicyDecision; plan?: CuaPlan } {
+  let plan: CuaPlan
+  try {
+    plan = parseCuaSubset(code)
+  } catch (error) {
+    return { decision: { allowed: false, code: 'invalid-cua-subset', reason: `${error instanceof Error ? error.message : String(error)}. Nothing in this batch ran.` } }
+  }
+  for (const [index, action] of plan.actions.entries()) {
+    const decision = checkAction(action.tool, action.args, config)
+    if (!decision.allowed) {
+      return { decision: { ...decision, reason: `Action ${index + 1} (${action.tool}, statement ${action.statement}): ${decision.reason} Nothing in this batch ran.` } }
+    }
+  }
+  return { decision: ALLOW, plan }
 }
 
 /**
