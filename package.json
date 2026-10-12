@@ -18,6 +18,8 @@
   },
   "files": [
     "dist",
+    "native",
+    "vendor/open-computer-use-windows",
     "agents",
     "skills",
     "docs",
@@ -25,14 +27,16 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/build-windows-driver.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test",
+    "test": "npm run build && node --test && npm run test:driver",
+    "test:driver": "node scripts/build-windows-driver.mjs --test",
     "prepare": "npm run build",
     "server": "node dist/cli.js server"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
+    "acorn": "^8.19.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {

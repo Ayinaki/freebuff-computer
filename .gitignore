@@ -2,3 +2,6 @@ node_modules/
 dist/
 *.log
 .fbc/
+
+# npm pack output. The release tarball is a build artifact, not source.
+*.tgz
