@@ -9,7 +9,10 @@ existing open-source driver rather than a reimplementation.
 ## Requirements
 
 - **Node 18 or newer** (the same Node that runs Freebuff is fine).
-- **The computer-use driver**, installed once:
+- **Windows:** the package includes a patched open-computer-use driver for x64 and arm64.
+  Building this repository needs **Go 1.22+** in addition to Node. Installing a packed package
+  needs no Go installation. Source and MIT license are in `vendor/open-computer-use-windows`.
+- **macOS/Linux:** install the external driver once:
 
   ```bash
   npm install -g open-computer-use
@@ -30,19 +33,51 @@ its thing. Two honest exceptions: `drag` on Windows drives a window-server drag 
 real pointer, and some custom-drawn apps (games, 3D and video tools) expose no accessibility nodes
 and need a brief foreground activation to accept input.
 
+Windows accessibility clients enable automatic focus by default. The bundled driver disables
+that setting for its accessibility actions. The two-window WPF regression now passes with
+foreground focus and the real pointer unchanged. An app can still implement its own activation
+behavior, so this is evidence for the tested path, not a guarantee for every app.
+See [multi-window verification](docs/verification-multiwindow.md) for the evidence and limits.
+
+## Optional foreground input on Windows
+
+Background input remains the default. If an app requires real mouse-button or
+modifier-key state, a human can add `"FBC_INPUT_MODE": "foreground"` to the
+Freebuff MCP registration's `env` object, then restart that MCP connection.
+Remove the setting or set it to `"background"` to return to background input.
+No agent tool can change this startup setting.
+
+Foreground mode currently uses real Windows input for drags, key combinations and
+coordinate/window-message clicks. Accessibility clicks, set-value, value-based
+typing and scrolling retain their existing paths. This is not a universal
+foreground replacement for every tool. It applies only to the bundled Windows
+driver; external drivers retain their own configuration.
+
+The overlay displays **Foreground**, and `computer_doctor` reports the mode.
+Real input can take focus and move your mouse. The driver refuses input while a
+mouse button or modifier is already held, stops if focus changes, and checks that
+pointer targets remain visible in the selected window. It attempts to release
+every button/key it pressed even on failure. Windows may deny activation or input
+to elevated apps; the driver reports that failure instead of bypassing it.
+Policy allowlists, audit mode and hard blocks still apply.
+
+The first disposable-window foreground drag test passed. Expanded shortcut and
+right-click verification is recorded in
+[foreground verification](docs/verification-foreground-input.md).
+Background drag remains incompatible with the tested Windows Forms control.
+
 ## Install and wire into Freebuff
 
 ### From this repository (works today)
 
-This repository ships a project-local MCP registration at `.agents/mcp.json`. Freebuff reads
-`.agents/mcp.json` from the workspace root (and from `..`, then `~`), so cloning the repo and opening
-it in Freebuff registers the server with no manual step:
+This repository ships a project-local MCP registration at `.agents/mcp.json`. Build the server
+before opening the workspace in Freebuff:
 
 ```bash
 git clone https://github.com/Ayinaki/freebuff-computer.git
 cd freebuff-computer
 npm install        # the prepare script runs the build, producing dist/
-fbc doctor         # confirm the driver is present and the contract matches
+node dist/cli.js doctor  # confirm the driver is present and the contract matches
 ```
 
 The entry Freebuff launches is:
@@ -58,10 +93,22 @@ The entry Freebuff launches is:
 }
 ```
 
-`mcpServers` is the standard MCP file format, and that is the key Freebuff reads. Repository-scoped
-`.agents` content is gated behind your consent, so Freebuff asks before it trusts this file — this is
-why the path is safe to commit. Freebuff speaks MCP to that command over stdio; the server takes no
-arguments. `dist/` is gitignored, so a fresh clone needs the `npm install` above first.
+`mcpServers` is the standard MCP file format. A registration file alone does not prove that the
+server is available in a Freebuff chat: repository trust and connection review may still be
+required. In the tested Desktop session, this project's entry was absent from the connected
+tools. Adding an absolute-path entry to the user-level registration made it available for review;
+approval and a new client session were still required before testing tool calls.
+
+Check Freebuff's MCP settings for `freebuff-computer`, review and enable the connection, then
+start a fresh chat. If it is not listed, run `node dist/cli.js setup` and register the printed
+absolute-path entry through Freebuff's custom-server settings. If merging it manually into
+`~/.agents/mcp.json`, preserve existing entries; do not edit `~/.freebuff/mcp.json`, the approval
+store. The loader's directory precedence alone does not establish why a Desktop session omitted
+a project registration.
+
+Freebuff speaks MCP over stdio. `dist/` is gitignored, so a fresh clone needs the `npm install`
+above first. Confirm that `computer_doctor`, `computer_policy` and `exec_cua_subset` are callable
+in the actual chat before attempting desktop actions.
 
 ### Globally, from npm (once published)
 
@@ -70,16 +117,17 @@ npm install -g freebuff-computer
 fbc setup
 ```
 
-`fbc setup` writes a default config and checks for the driver. Add `--install-driver` to have it run
-`npm install -g open-computer-use` for you. It then prints the MCP entry to add in Freebuff under
-Connectors → add custom server:
+`fbc setup` writes a default config and checks for the driver. On macOS/Linux, add `--install-driver` to run
+`npm install -g open-computer-use` for you. It prints an MCP entry using the absolute paths of
+your Node executable and installed server. Add that output in Freebuff under
+Connectors → add custom server, or save it in your workspace's `.agents/mcp.json`. For example:
 
 ```json
 {
   "mcpServers": {
     "freebuff-computer": {
-      "command": "npx",
-      "args": ["-y", "freebuff-computer", "server"]
+      "command": "/absolute/path/to/node",
+      "args": ["/absolute/path/to/freebuff-computer/dist/cli.js", "server"]
     }
   }
 }
@@ -100,7 +148,33 @@ skill that describes the workflow. They are templates, not part of this package'
 as a user agent file from `.agents/` without the change described in
 [Known gaps](#known-gaps).
 
-`fbc setup` does not write into `~/.freebuff/mcp.json`. That file is hash-verified by the Freebuff
+For a standalone computer-use agent, run this from the checkout:
+
+```bash
+node dist/cli.js setup --agent-file .agents/computer-use.js
+```
+
+The generated agent imports no Freebuff-monorepo packages. It uses the installed Node executable
+and this server's absolute path, so it works when launched from another working directory. Pass
+`--model <provider/model>` to choose its model. Existing agent files are never overwritten.
+The original `agents/computer-use.ts` remains the Freebuff-monorepo drop-in.
+
+To make the computer tools available to ordinary Freebuff agents in another workspace, write
+that workspace's registration instead:
+
+```bash
+node dist/cli.js setup --mcp-file /path/to/workspace/.agents/mcp.json
+```
+
+Restart Freebuff in that workspace and approve its repository trust prompt. The file uses this
+installation's absolute paths. Setup never replaces an existing registration, so other connectors
+stay intact. If the file already exists, run setup without file options and merge the printed
+`freebuff-computer` entry into its `mcpServers` object. You can combine `--agent-file` and
+`--mcp-file` when creating both files in a fresh workspace.
+
+`fbc setup` now prints an MCP entry pointing at the current installation, so it needs no npm
+publication. Regenerate the entry or agent file if you move this installation. It does not write
+into `~/.freebuff/mcp.json`. That file is hash-verified by the Freebuff
 client, so a hand-written entry there would be rejected; registering the server through the UI is
 the supported path.
 
@@ -141,7 +215,7 @@ expensive, this is where you find out why.
 
 | Tool | Purpose |
 | --- | --- |
-| `list_apps` | List the apps Computer Use can drive, with pid and window title. |
+| `list_apps` | List available apps; on Windows, each window has its own exact app selector, pid and title. |
 | `get_app_state` | Read an app's accessibility tree as an indented outline. Every actionable node carries an `element_index`. |
 | `click` | Click an element by `element_index`, or by x/y coordinates for surfaces with no accessibility node. |
 | `set_value` | Set an editable control's value directly. Exact and atomic; preferred over typing. |
@@ -151,11 +225,192 @@ expensive, this is where you find out why.
 | `drag` | Drag from one coordinate to another. |
 | `perform_secondary_action` | Invoke a named accessibility action on an element, such as `SetValue` or `ExpandCollapse`. |
 | `computer_doctor` | Report the health of the setup from inside the agent's own turn. |
-| `computer_policy` | Read or change the safety policy. |
+| `computer_policy` | Read or change the safety policy. A change is written to the config file, so it survives a restart. |
+| `exec_cua_subset` | Execute a statically enumerable batch written in a restricted `cua` JavaScript subset. |
+| `computer_session` | Begin, inspect or end the persistent visual computer-use session. |
 
-The first nine names are intentionally identical to Codex's computer-use tools. The last two are
-additions from this project so the agent can diagnose and configure itself without the user leaving
-the chat.
+### Reading an action result
+
+The driver reports that a dispatch did not throw, which is not the same as the app having
+acted. Every mutating tool therefore ends its result with one line that says what could
+actually be observed afterwards:
+
+| Line | Meaning |
+| --- | --- |
+| `[verification: changed]` | The window's accessibility tree differs from the snapshot taken before the call. |
+| `[verification: confirmed]` | `set_value` only: the element reads back the value that was requested. |
+| `[verification: differs]` | `set_value` only: the element holds a different value, so the control clamped or rejected it. |
+| `[verification: unchanged]` | The action was dispatched, but the tree is identical. The app may have ignored the input. |
+| `[verification: unverified]` | There was nothing to compare against, or no new snapshot arrived. |
+
+Detection is bounded by the nodes the model actually read, so `unchanged` means "nothing
+changed in the part of the tree you saw", not "nothing happened". When a dispatch appears
+to have moved nothing, the wrapper re-reads the window once after 250 ms, because the
+driver samples a fixed instant after dispatch and a slow app has not repainted yet by
+then. That extra read is recorded in the trajectory, so `fbc stats` shows what it cost.
+
+`exec_cua_subset` never echoes a mutating step's own result, so its batch ends with a
+`[verification: batch]` summary instead: a batch that changed nothing on screen must not
+read as a successful one.
+
+On Windows, `list_apps` returns one entry per visible top-level window. Copy the complete
+selector, such as `vivaldi@window:16980:2033548:639270107124352414`, into the `app` argument.
+Two windows of the same browser share a process but have separate snapshots and indexes.
+Ambiguous bare names/PIDs are refused; closed or mismatched selectors never select a sibling
+as a fallback. The allowlist still checks the app name or PID, not the window handle.
+Inspect every relevant browser window before concluding a tab is absent. Restarting Freebuff
+does not close browser tabs, but it does invalidate the MCP session's observations.
+
+Windows value-based typing appends through the bundled background accessibility client when no native edit handle is available. It preserves whitespace but does not generate per-key events. Prefer indexed `set_value` when choosing among fields; use `press_key` separately to submit. Set `OPEN_COMPUTER_USE_WINDOWS_ALLOW_UIA_TEXT_FALLBACK=0` in the MCP environment to opt out.
+
+The first nine names keep the native driver contract. This project adds diagnostics, policy
+inspection, the restricted code surface and session visibility, for an exact total of thirteen tools.
+
+### Restricted code surface
+
+`exec_cua_subset` accepts a `code` string, for example:
+
+```javascript
+var app = await cua.getApp("Notepad");
+var state = await app.getAXState({emit: false, maxTreeNodes: 40});
+nodeRepl.write(state);
+```
+
+The goal is a statically enumerable action set: the server must know every native call and its
+literal arguments before anything executes. Acorn parses the source into an AST; an allowlist
+visitor translates accepted nodes into a complete action list. `src/policy.ts` checks every
+action. If parsing, argument validation, or any policy check fails, **nothing in that batch runs**,
+including earlier reads. Refusals identify the offending statement or action.
+
+The server never forwards submitted source to `ocu js` or any JavaScript evaluator. It translates
+the supported `cua` methods into the same native driver calls used by the structured tools. Both
+surfaces share one persistent driver session, snapshot defaults, compaction, and trajectories.
+This follows the driver's `cua` method shapes without exposing its unrestricted Node.js runtime.
+
+Supported forms:
+
+- `await cua.getApp("App")`, `await cua.listApps()`, and `await cua.getState()`.
+- Awaited app methods: `getAXState`, `click`, `setValue`, `typeText`, `pressKey`, `scroll`, `drag`,
+  and `performSecondaryAction`. Arguments must be literal strings, finite numbers, booleans,
+  nulls, arrays, or plain objects, and must match the native tool's schema. Element indexes are
+  strings; coordinate pairs use `[x, y]`.
+- One `var`, `let`, or `const` binding per statement, initialized by an awaited app binding or
+  observation. Bindings exist only within that batch; rebind the app in the next call.
+- `nodeRepl.write(result)` or `nodeRepl.write(literal)`. Observation results are returned text,
+  including for `listApps` and `getState`; this subset does not expose the adapter's result objects.
+  Reads emit driver content by default. `emit:false` suppresses output on `getAXState`, `listApps`,
+  and `getState`.
+- Snapshot options: `textLimit`, `maxTreeNodes`, `maxTreeDepth`, `emit`. Click options:
+  `mouseButton`, `clickCount`, `clickMethod`. The existing platform caveats still apply.
+
+Loops, branches, functions, assignments, imports, computed properties, dynamic expressions,
+spread, getters, and arbitrary globals are rejected. Screenshot helpers and `rewriteDocumentation`
+are not supported. Each call allows at most 32,768 source characters and 128 statements.
+
+Execution is sequential. A driver failure stops the remaining actions, but completed actions are
+not rolled back. Batch calls are serialized with structured calls and policy changes. Plan actions
+only from a fresh snapshot; when an action changes the UI, read again before choosing new indexes.
+
+Acorn is a runtime dependency because parsing is part of the policy boundary. General JavaScript
+requires a separate isolation provider and is outside this tool's scope.
+
+To verify the exact MCP surface and perform a read-only demonstration against an already-open,
+harmless app (replace `Notepad` with its actual name):
+
+```bash
+npm run typecheck
+npm test
+node scripts/verify-cua-subset.mjs Notepad
+```
+
+The verification script starts a fresh server in audit mode and asserts all thirteen tool names.
+Without an app argument it lists apps through `exec_cua_subset`.
+
+## Visible activity on Windows
+
+The server starts a separate, click-through native overlay when an approved native call begins,
+or when `computer_session` receives `{"action":"begin"}`. A thin blue border marks each monitor;
+one compact status capsule on the primary monitor describes the action and its outcome: Reading
+app / View captured, Clicking / Click sent, Setting text / Text set, Sending key / Key sent, or
+a specific failure. It does not pretend to know whether the model is thinking. App titles and
+raw tool names are not displayed. A small dark cursor with a white edge glides between measured targets.
+The driver waits for the cursor to arrive before dispatching the action. Reduced motion places
+the cursor directly at the target.
+
+**The visual session and cursor persist between tool calls**, including thinking pauses. The cursor
+starts at the primary monitor's centre and glides from its current position to each verified target
+before the driver acts. A successful click has a brief pulse. Reads, keyboard actions, errors and
+unknown targets leave it at its resting position; they do not invent a new target. There is no
+target rectangle. Reduced motion places the cursor directly at verified targets.
+Always call `computer_session` with `{"action":"end"}`
+when finished, cancelled, blocked, or returning control to the user. Do not end between steps.
+This hides all monitor overlays and clears cached target geometry; it does not change policy or
+undo app actions. `{"action":"status"}` reads visibility without starting the helper. The next
+approved native call begins a new visible session automatically. Disconnecting the MCP server
+also removes the overlay. There is no short idle timer: a host that keeps its server alive must
+send the explicit end signal when the task ends.
+
+Events are pushed over an authenticated loopback connection from the trajectory recorder; there
+is no watched file. The overlay receives one rectangle, app, action, timestamp and phase, plus
+the snapshot's window handle, process ID, window title and dimensions for private window matching. The title is
+neither displayed nor stored in activity records. It never receives typed text, key payloads or
+the accessibility tree. Geometry is cached before compaction, including fresh snapshots returned
+by actions, and discarded when an action returns no snapshot or a display change invalidates it.
+
+Coordinate clicks also move the cursor when the snapshot contains an exact window handle and the point is within its bounds. Unverified coordinates leave it at rest. See [coordinate cursor verification](docs/verification-coordinate-cursor.md).
+
+**Windows driver frames are window-relative, not desktop coordinates.** The renderer resolves
+one visible window with the matching handle, process, title and dimensions, then adds its physical origin.
+It leaves the pointer at rest if identity or geometry is missing, the window is minimized or resized,
+the target is covered, or the coordinate transform is unknown. If the target window moves or becomes
+covered during travel, movement stops and the target is withdrawn. It never selects the first
+ambiguous window or guesses a screenshot transform. A resting cursor is not a verified action target.
+
+`FBC_OVERLAY=0` disables the helper. `FBC_REDUCED_MOTION=1` removes cursor travel; the Windows
+client-area animation preference is also respected. `computer_doctor` reports renderer status,
+and tool responses warn when it cannot paint. Driver calls continue if the overlay is unavailable.
+
+The renderer uses physical desktop pixels and one layered Win32 window per monitor. The live
+verification passed on a dual-monitor desktop with a negative monitor origin, at 100% scaling.
+Mixed-DPI, display hot-plug, and non-Windows overlays are not yet verified. Windows PowerShell
+and the built-in .NET Framework compile the bundled native helper on startup; no Electron download
+or additional npm dependency is required. Environments that block PowerShell or Add-Type will
+report an overlay failure.
+
+```bash
+node scripts/verify-native-overlay.mjs
+node scripts/verify-overlay-exit.mjs
+node scripts/verify-window-target.mjs vivaldi
+```
+
+The first probe briefly draws test activity and checks actual screen pixels, native window styles,
+focus and real-pointer preservation, rebuilding after a display-change notification, persistence
+through a thinking pause, cursor travel, explicit session end and window cleanup. The second terminates its own test host while the overlay is active and checks
+that the helper destroys its windows. Neither sends input to another app or changes display settings.
+The third reads Vivaldi's New Tab element, compares the converted driver frame with independently
+measured UI Automation desktop bounds, then checks actual cursor pixels at that location without
+clicking. It also asserts that missing or mismatched window identities do not move the resting pointer.
+Notification handling is verified; physical monitor hot-plug and mixed-DPI still need hardware tests.
+The older `prototype/` remains an experimental reference, not the runtime.
+
+Run the desktop probe while the real mouse and keyboard are idle: concurrent user input makes its
+before/after preservation comparisons inconclusive. Such failures still produce a nonzero exit.
+For a static preview drawn by the same renderer, run
+`powershell.exe -NoProfile -NonInteractive -File scripts/preview-overlay.ps1`.
+
+See [action verification](docs/verification-action-verification.md) for how an action result
+distinguishes dispatch from an observed effect, and what that check cannot see.
+See [the cursor correction verification](docs/verification-cursor-targets.md) for measured offsets,
+test results, and the differences from the currently bundled OpenAI Computer Use plugin.
+The [persistent-cursor follow-up](docs/verification-persistent-cursor.md) records the subsequent
+centre-start and always-visible behavior. For a more demanding Freebuff run, use the
+[local practice page](docs/computer-use-practice.html) and its [test prompt](docs/advanced-test-prompt.md).
+
+To check a locally installed tarball, pass its package directory to
+`node scripts/verify-installed.mjs <installed-package-root>`. This creates an isolated workspace,
+generates a standalone agent, launches its exact MCP configuration, asserts all thirteen tools,
+and runs read-only app discovery with the packaged renderer. It does not run a Freebuff model.
+The pixel probe also accepts that directory: `node scripts/verify-native-overlay.mjs <installed-package-root>`.
 
 ## Safety
 
@@ -266,23 +521,35 @@ artifacts.
 
 Honest list of what is not done yet.
 
-- **Not published to npm.** Every `npx -y freebuff-computer` instruction — `README.md`, the snippet
-  `fbc setup` prints, and `mcpServers` in `agents/computer-use.ts` — 404s until `npm publish`
-  happens. The `.agents/mcp.json` route in this repository works today and needs no publish.
+- **Not published to npm.** The `npx -y freebuff-computer` examples and the monorepo agent's
+  registration still require publication. The repository registration and `setup` output use local
+  paths and need no publish.
 - **`agents/computer-use.ts` only loads inside the Freebuff monorepo.** Freebuff loads user agent
   files from `.agents/*.ts` and imports them raw, so a bare value import such as
   `@codebuff/common/constants/gemini` has to resolve from the checkout's own `node_modules`, which
-  it does not in a standalone clone. To make it load here, either inline the model id literal
-  (`'google/gemini-3.5-flash-lite'`) or add a `.agents/computer-use.ts` that re-exports it. The
-  monorepo drop-in keeps the constant so it tracks model renames, which is why it is written that
-  way.
-- **No live mutation test.** The suite exercises observation, compaction, policy refusals and
-  diagnostics against the real driver, but no test performs an actual `click`, `type_text` or
-  `set_value` on a real app — doing that would drive whatever the user has open. The mutation path
-  is covered by policy unit tests and contract verification only.
+  it does not in a standalone clone. Use `setup --agent-file .agents/computer-use.js` for the
+  standalone version; the monorepo drop-in keeps its constant import. Generated-agent import and
+  configuration are tested. The installed Freebuff client lists the generated `@computer-use`
+  agent in autocomplete. The user's Freebuff browser test successfully opened a new tab, searched
+  Google, verified results and preserved existing tabs. The user also reported successful
+  explicit session begin/end runs with a persistent outline. The advanced practice-page run
+  across two browser windows still needs verification through Freebuff.
+- **Live mutations are not part of the unattended suite.** A user-authorized Google search in
+  Vivaldi verified New Tab clicking, address-field set-value, Return dispatch, and reading results
+  through the subset tool. `ctrl+t` reported success without opening a tab. The delivery gap it
+  exposes is still open: modifier chords are posted as window messages that a browser ignores.
+  What changed is that such an action can no longer be mistaken for a success, because every
+  action result now reports what was observed afterwards and `ctrl+t` returns
+  `[verification: unchanged]`. Unattended tests use a stub for mutation dispatch to avoid driving
+  whatever the user has open. Separate interactive regressions use disposable test-owned
+  windows to verify window isolation, real value changes, UIA actions, focus and pointer
+  preservation; see [current status](docs/CURRENT_STATUS.md).
 - **Verified on Windows 11 only.** The macOS and Linux notes come from the driver's own
   documentation, not from a run on those systems.
-- **No CI.** There is no workflow file; `npm run typecheck` and `npm test` are run by hand.
+- **Hosted CI is not yet verified.** `.github/workflows/verify.yml` runs the full suite with the
+  verified Windows driver, compiles the overlay, and checks a packed installation on Node 18, 22
+  and 24. The workflow has not run on GitHub yet. Interactive pixel/focus and mixed-DPI tests
+  require a real desktop and are separate from CI.
 
 ## Development
 

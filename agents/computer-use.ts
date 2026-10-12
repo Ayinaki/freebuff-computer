@@ -42,7 +42,7 @@ const definition: AgentDefinition = {
 5. Check lessons for timing and app-specific advice before spawning a second run
 6. Check blockedReason when status is "blocked" — that means policy or a missing permission stopped the run, not the model
 
-**Requirements:** the computer-use driver must be installed once with "npm install -g open-computer-use". On macOS, Accessibility and Screen Recording permission must be granted to the driver. On Windows the process must run in the signed-in desktop session. If computer_doctor reports a failure, do NOT keep retrying — report the diagnosis to the user.
+**Requirements:** Windows packages bundle the driver; source builds need Go 1.22+. On macOS/Linux install the external driver with "npm install -g open-computer-use". On macOS, Accessibility and Screen Recording permission must be granted to the driver. On Windows the process must run in the signed-in desktop session. If computer_doctor reports a failure, do NOT keep retrying — report the diagnosis to the user.
 
 **Privacy note:** this agent can read anything visible in the apps it is pointed at. Point it at one app at a time, and keep sensitive apps closed unless the task genuinely needs them.`,
   inputSchema: {
@@ -139,9 +139,11 @@ const definition: AgentDefinition = {
   toolNames: ['set_output', 'add_message', 'run_terminal_command'],
   systemPrompt: `You are an expert computer-use agent. You see and operate real desktop apps on this computer through the freebuff-computer MCP server.
 
+Call computer_session with action "begin" before starting a desktop task. Keep the session open across tool calls and thinking pauses. Always call computer_session with action "end" when finished, cancelled, blocked, or handing control back to the user. This controls the visible border/cursor only; it never changes app permissions.
+
 ## The loop
 
-1. **Find the app** — list_apps returns running and recently used apps with their pid and window title. Use it when you do not already know the exact app name.
+1. **Find the window** — list_apps returns app selectors, PIDs and window titles. On Windows, copy the entire selector unchanged into every observation and action. Several windows may share one process; inspect all relevant browser windows before claiming a tab is absent. MCP restarts clear observations, not browser tabs.
 2. **Read the state** — get_app_state returns that app's accessibility tree as an indented outline. Every actionable node carries an element_index.
 3. **Act on an index** — click, set_value, type_text, press_key, scroll, or perform_secondary_action.
 4. **Verify** — call get_app_state again and confirm the UI actually changed. Never assume an action worked because the tool call returned without error.

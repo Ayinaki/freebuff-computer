@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; form-action 'none'; connect-src 'none'">
+<title>Freebuff computer practice</title>
+<style>
+:root{font:17px/1.6 system-ui,sans-serif;color:#202c3b;background:#f5f6f8;color-scheme:light}body{max-width:820px;margin:48px auto;padding:0 24px 64px}h1{font-size:32px;line-height:1.2}h2{font-size:23px;margin-top:0}p{max-width:66ch}section{background:white;border:1px solid #c7cfd9;border-radius:12px;padding:28px;margin:32px 0}label{display:block;margin:18px 0}input,select,textarea,button{font:inherit}input:not([type=checkbox]),select,textarea{display:block;box-sizing:border-box;width:100%;max-width:560px;padding:9px 12px;border:1px solid #748295;border-radius:6px;background:white;color:inherit}textarea{min-height:100px}button{border:1px solid #334c72;border-radius:6px;background:#244f89;color:white;padding:10px 18px;cursor:pointer}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #1670d0;outline-offset:3px}button:disabled{background:#6a7585;cursor:default}li{margin:12px 0}li label{margin:0}input[type=checkbox]{width:20px;height:20px;vertical-align:middle;margin-right:10px}output{display:block;white-space:pre-line;font-weight:600;margin-top:18px}#review{margin-top:65vh}small{color:#46566d}
+</style>
+<main>
+<h1>Computer practice</h1>
+<p>A local workspace for testing Freebuff's computer tools. Everything stays in this tab. Refreshing clears the exercise; no information is saved or sent.</p>
+<section aria-labelledby="details-heading">
+<h2 id="details-heading">Plan a small delivery</h2>
+<label>Delivery name<input id="delivery" autocomplete="off" placeholder="Enter a name"></label>
+<label>Priority<select id="priority"><option>Normal</option><option>Urgent</option><option>Low</option></select></label>
+<label>Delivery notes<textarea id="notes" placeholder="Enter instructions"></textarea></label>
+<label><input id="fragile" type="checkbox">Handle with care</label>
+</section>
+<section aria-labelledby="items-heading">
+<h2 id="items-heading">Packing list</h2>
+<label>New item<input id="new-item" autocomplete="off" placeholder="Item to pack"></label>
+<button id="add" type="button">Add item</button>
+<p id="count" role="status">0 items, 0 packed</p>
+<label>Filter items<input id="filter" type="search" placeholder="Find an item"></label>
+<ul id="items" aria-label="Packing items"></ul>
+</section>
+<section id="review" aria-labelledby="review-heading">
+<h2 id="review-heading">Review the delivery</h2>
+<p>Scroll here after editing the list. Generate a local receipt to verify the final values.</p>
+<button id="generate" type="button">Generate receipt</button>
+<output id="receipt" aria-live="polite">No receipt yet.</output>
+</section>
+</main>
+<script>
+const byId=id=>document.getElementById(id);
+const items=[];
+function refreshList(){
+ const query=byId('filter').value.toLowerCase();
+ for(const item of items) item.row.hidden=!item.name.toLowerCase().includes(query);
+ byId('count').textContent=`${items.length} items, ${items.filter(item=>item.checkbox.checked).length} packed`;
+}
+function addItem(){
+ const name=byId('new-item').value.trim();
+ if(!name)return;
+ const row=document.createElement('li'),label=document.createElement('label'),checkbox=document.createElement('input');
+ checkbox.type='checkbox';
+ label.append(checkbox,document.createTextNode(name)); row.append(label); byId('items').append(row);
+ items.push({name,row,checkbox}); checkbox.addEventListener('change',refreshList);
+ byId('new-item').value=''; refreshList();
+}
+byId('add').addEventListener('click',addItem);
+byId('new-item').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();addItem();}});
+byId('filter').addEventListener('input',refreshList);
+byId('generate').addEventListener('click',()=>{
+ byId('receipt').textContent=[`Delivery: ${byId('delivery').value||'(unnamed)'}`,`Priority: ${byId('priority').value}`,`Notes: ${byId('notes').value||'(none)'}`,`Handle with care: ${byId('fragile').checked?'Yes':'No'}`,`Items: ${items.map(item=>item.name).join(', ')||'(none)'}`,`Packed: ${items.filter(item=>item.checkbox.checked).map(item=>item.name).join(', ')||'(none)'}`].join('\n');
+});
+</script>
+</html>

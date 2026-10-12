@@ -1,0 +1,52 @@
+name: Verify
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 22, 24]
+    env:
+      # Hosted runners do not establish a usable interactive desktop for visual QA.
+      # Native compilation is checked below; pixel/focus checks run on a real desktop.
+      FBC_OVERLAY: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache: false
+      - name: Install locked package dependencies
+        run: npm ci
+      - name: Require the driver and verify its contract
+        shell: pwsh
+        run: |
+          if (!(Test-Path dist/native/win32-x64/open-computer-use.exe)) { throw 'Bundled driver missing' }
+          node dist/cli.js doctor
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Run every test, including the real driver
+        run: npm test
+      - name: Compile the native overlay
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -Path native/Overlay.cs -ReferencedAssemblies System.Drawing,System.Windows.Forms,System.Web.Extensions
+      - name: Verify an offline packed installation without Go
+        shell: powershell
+        run: ./scripts/verify-package.ps1

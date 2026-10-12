@@ -28,7 +28,15 @@ Do **not** reach for it when a better route exists. In rough order:
 
 ## Requirements
 
-The driver must be installed once, and it runs on the same machine as the app:
+Keep the visual session open for the whole desktop task. Call `computer_session` with
+`{"action":"begin"}` before starting (the first approved desktop call also starts it).
+Do not end between tool calls or while thinking. Always call `computer_session` with
+`{"action":"end"}` when finished, cancelled, blocked, or handing control back to the user.
+This hides the blue border and synthetic cursor without changing app permissions or undoing
+actions. `{"action":"status"}` reads visibility state without starting the renderer.
+
+Windows packages include the driver. A source checkout also needs Go 1.22+ to build it.
+On macOS/Linux, install the external driver on the same machine as the app:
 
 ```bash
 npm install -g open-computer-use
@@ -63,6 +71,13 @@ TextEdit -- TextEdit [running, pid=4188, window=Untitled]
 Note that the same product name can appear on several windows, and some entries
 (like `explorer`) are shell surfaces rather than the window you want. Pick the
 one whose window title matches the task.
+
+On Windows each entry starts with an exact selector such as
+`vivaldi@window:16980:2033548:639270107124352414`. Copy the entire selector into
+the `app` argument for observations and actions. Multiple windows can share a PID;
+bare names/PIDs are refused when ambiguous. Inspect every relevant browser window
+before claiming a tab is absent. MCP restarts clear observations, not browser tabs.
+An index belongs to its window's snapshot and must not be reused in another window.
 
 ### 2. Snapshot it
 
@@ -128,7 +143,7 @@ with `SetValue`) — not to repeat step 3.
 
 `get_app_state` parameters:
 
-- `app` — app name, as reported by `list_apps` (required)
+- `app` — exact app selector reported by `list_apps` (required)
 - `max_tree_nodes` — how many nodes to render. Defaults to 200; raise it when a long list looks incomplete
 - `max_tree_depth` — how deep to render. Defaults to 32
 - `text_limit` — characters returned per node. Defaults to 500; use `"max"` to read a full email body or document
