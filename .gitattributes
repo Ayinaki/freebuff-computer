@@ -1,0 +1,21 @@
+# Line endings are pinned so a fresh clone produces the same bytes everywhere.
+#
+# core.autocrlf on a Windows machine rewrites the working tree to CRLF while the
+# repository stores LF. Nothing in this project needs CRLF: there is no .bat or
+# .cmd file, and Windows PowerShell, the C# overlay compiler and gofmt all read
+# LF. Pinning the whole tree keeps a clone from silently diverging file by file,
+# and keeps a Windows checkout and a CI runner byte-identical.
+* text=auto eol=lf
+
+# The vendored driver and the native overlay are compiled and executed as they
+# are, so their bytes must survive a checkout unchanged.
+/vendor/**  text eol=lf
+/native/**  text eol=lf
+
+# Formats that must never be line-ending converted, even if a heuristic would
+# call them text.
+*.exe  binary
+*.dll  binary
+*.ico  binary
+*.png  binary
+*.tgz  binary
