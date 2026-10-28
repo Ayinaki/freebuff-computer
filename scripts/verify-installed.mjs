@@ -31,7 +31,8 @@ try {
   await client.connect(transport)
   const names = (await client.listTools()).tools.map(tool => tool.name).sort()
   assert.deepEqual(names, ['list_apps', 'get_app_state', 'click', 'set_value', 'type_text', 'press_key',
-    'scroll', 'drag', 'perform_secondary_action', 'computer_doctor', 'computer_policy', 'exec_cua_subset', 'computer_session'].sort())
+    'scroll', 'drag', 'perform_secondary_action', 'computer_doctor', 'computer_policy', 'exec_cua_subset',
+    'computer_session', 'computer_screenshot', 'computer_wait'].sort())
   const result = await client.callTool({ name: 'exec_cua_subset', arguments: { code: 'await cua.listApps();' } })
   assert.equal(result.isError, false, JSON.stringify(result.content))
   assert.ok(result.content.some(block => block.type === 'text' && block.text.trim()), 'live discovery must return content')

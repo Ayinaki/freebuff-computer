@@ -13,6 +13,8 @@ export interface PolicyDecision {
     | 'unknown-tool'
     | 'invalid-cua-subset'
     | 'invalid-session'
+    | 'invalid-screenshot'
+    | 'invalid-wait'
     | 'invalid-window-selector'
   reason?: string
 }
@@ -48,6 +50,51 @@ export function checkAction(
   if (toolName === 'exec_cua_subset') return checkCuaSubset(args['code'], config).decision
   if (toolName === 'computer_session' && (typeof args['action'] !== 'string' || !['begin', 'end', 'status'].includes(args['action']) || Object.keys(args).some(key => key !== 'action'))) {
     return { allowed: false, code: 'invalid-session', reason: 'computer_session accepts only action: "begin", "end", or "status".' }
+  }
+
+  if (toolName === 'computer_screenshot') {
+    const extra = Object.keys(args).filter((key) => !['app', 'max_dimension'].includes(key))
+    if (typeof args['app'] !== 'string' || args['app'].trim() === '') {
+      return { allowed: false, code: 'invalid-screenshot', reason: 'computer_screenshot needs the app selector from list_apps.' }
+    }
+    const dimension = args['max_dimension']
+    if (dimension !== undefined && (typeof dimension !== 'number' || !Number.isFinite(dimension) || dimension < 320)) {
+      return { allowed: false, code: 'invalid-screenshot', reason: 'max_dimension must be a number of at least 320 pixels.' }
+    }
+    if (extra.length > 0) {
+      return { allowed: false, code: 'invalid-screenshot', reason: `computer_screenshot does not accept: ${extra.join(', ')}.` }
+    }
+  }
+
+  if (toolName === 'computer_wait') {
+    const until = args['until']
+    const allowedUntil = ['present', 'gone', 'text', 'value', 'idle']
+    if (typeof until !== 'string' || !allowedUntil.includes(until)) {
+      return { allowed: false, code: 'invalid-wait', reason: `computer_wait until must be one of: ${allowedUntil.join(', ')}.` }
+    }
+    const extra = Object.keys(args).filter((key) =>
+      !['app', 'until', 'element_index', 'text', 'value', 'timeout_ms', 'interval_ms'].includes(key),
+    )
+    if (extra.length > 0) {
+      return { allowed: false, code: 'invalid-wait', reason: `computer_wait does not accept: ${extra.join(', ')}.` }
+    }
+    if (until !== 'idle' && typeof args['element_index'] !== 'string') {
+      return { allowed: false, code: 'invalid-wait', reason: `until="${until}" needs the element_index of the element to watch.` }
+    }
+    if (until === 'text' && typeof args['text'] !== 'string') {
+      return { allowed: false, code: 'invalid-wait', reason: 'until="text" needs the text to look for.' }
+    }
+    if (until === 'value' && typeof args['value'] !== 'string') {
+      return { allowed: false, code: 'invalid-wait', reason: 'until="value" needs the value to compare against.' }
+    }
+    const timeout = args['timeout_ms']
+    if (timeout !== undefined && (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout < 100)) {
+      return { allowed: false, code: 'invalid-wait', reason: 'timeout_ms must be a number of at least 100 milliseconds.' }
+    }
+    const interval = args['interval_ms']
+    if (interval !== undefined && (typeof interval !== 'number' || !Number.isFinite(interval) || interval < 50)) {
+      return { allowed: false, code: 'invalid-wait', reason: 'interval_ms must be a number of at least 50 milliseconds.' }
+    }
   }
 
   const app = typeof args['app'] === 'string' ? args['app'] : undefined

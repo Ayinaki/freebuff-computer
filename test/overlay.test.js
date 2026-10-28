@@ -33,7 +33,7 @@ test('FBC_OVERLAY=0 keeps activity calls inert without launching a helper', asyn
   try {
     const overlay = new DesktopOverlay()
     await overlay.send({ts:new Date().toISOString(),tool:'click',phase:'begin',pointer:false})
-    assert.deepEqual(overlay.status(),{state:'disabled',error:undefined,windows:undefined,sessionActive:false})
+    assert.deepEqual(overlay.status(),{state:'disabled',error:undefined,windows:undefined,sessionActive:false,idleEnds:0})
     await overlay.close()
     assert.equal(overlay.status().state,'closed')
   } finally {

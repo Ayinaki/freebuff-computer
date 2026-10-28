@@ -47,6 +47,6 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Add-Type -Path native/Overlay.cs -ReferencedAssemblies System.Drawing,System.Windows.Forms,System.Web.Extensions
-      - name: Verify an offline packed installation without Go
+      - name: Verify a packed installation without Go or install-time builds
         shell: powershell
         run: ./scripts/verify-package.ps1

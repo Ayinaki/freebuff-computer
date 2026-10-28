@@ -1,7 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { STATE_DIR } from './config.js'
 
 export interface Rect { x: number; y: number; width: number; height: number }
 export interface SnapshotWindow { pid: number; title: string; width: number; height: number; hwnd?: string }
@@ -42,6 +45,8 @@ export function activityLabel(tool: string, phase: Activity['phase']): string {
     scroll: ['Scrolling', 'Scroll sent', 'Scroll failed'],
     drag: ['Dragging', 'Drag sent', 'Drag failed'],
     perform_secondary_action: ['Acting on element', 'Action sent', 'Action failed'],
+    computer_screenshot: ['Capturing screen', 'Screen captured', 'Could not capture'],
+    computer_wait: ['Waiting', 'Condition met', 'Wait ended'],
   }
   return (labels[tool] ?? ['Working', 'Step finished', 'Needs attention'])[(phase === 'begin' || phase === 'dispatch') ? 0 : phase === 'end' ? 1 : 2]!
 }
@@ -146,6 +151,29 @@ export function classifyChange(before: Observation | undefined, afterText: strin
   return { state: matches ? 'unchanged' : 'changed', nodes: comparable }
 }
 
+/** Find one node's rendered line by its element index. */
+export function nodeLineFor(text: string, index: string): string | undefined {
+  for (const line of snapshotNodeLines(text)) {
+    const match = /^\t*(\d+)\s/.exec(line)
+    if (match && match[1] === index) return line
+  }
+  return undefined
+}
+
+/** The Value segment of a rendered node line, when it has one. */
+export function nodeValueOf(line: string | undefined): string | undefined {
+  if (line === undefined) return undefined
+  return nodeValue(line)
+}
+
+/** Secondary actions a node advertises, so a failed action can suggest the next one. */
+export function nodeSecondaryActions(line: string | undefined): string[] {
+  if (line === undefined) return []
+  const match = / Secondary Actions: (.*?)(?: Frame: |$)/.exec(line)
+  if (!match) return []
+  return match[1]!.split(',').map((value) => value.trim()).filter(Boolean)
+}
+
 export type ReadBack =
   | { state: 'confirmed' }
   | { state: 'differs'; observed: string }
@@ -212,6 +240,59 @@ export interface OverlaySink {
   send(event: Activity): Promise<void>
   status(): Record<string, unknown>
   close(): Promise<void>
+  /** Hide the visible session without closing the helper process. */
+  endSession?(reason?: 'explicit' | 'idle'): Promise<boolean>
+  /** Close the helper and return to a restartable idle state. */
+  closeHelper?(): Promise<void>
+}
+
+/**
+ * A one-line record of the helper this computer use server started.
+ *
+ * It exists so `fbc cleanup` can find a border the agent walked away from
+ * without guessing at process names, and so `fbc doctor` can tell a live
+ * session from its leftover.
+ */
+export interface OverlayRecord {
+  pid: number
+  parentPid: number
+  startedAt: string
+  monitors: number
+}
+
+const OVERLAY_RECORD = join(STATE_DIR, 'overlay.json')
+
+export function readOverlayRecord(): OverlayRecord | undefined {
+  try {
+    if (!existsSync(OVERLAY_RECORD)) return undefined
+    const raw = JSON.parse(readFileSync(OVERLAY_RECORD, 'utf8')) as Partial<OverlayRecord>
+    if (typeof raw.pid !== 'number') return undefined
+    return {
+      pid: raw.pid,
+      parentPid: typeof raw.parentPid === 'number' ? raw.parentPid : 0,
+      startedAt: typeof raw.startedAt === 'string' ? raw.startedAt : '',
+      monitors: typeof raw.monitors === 'number' ? raw.monitors : 0,
+    }
+  } catch {
+    return undefined
+  }
+}
+
+function writeOverlayRecord(record: OverlayRecord): void {
+  try {
+    mkdirSync(STATE_DIR, { recursive: true })
+    writeFileSync(OVERLAY_RECORD, `${JSON.stringify(record, null, 2)}\n`, 'utf8')
+  } catch {
+    // A missing record costs diagnostics, never the session.
+  }
+}
+
+export function removeOverlayRecord(): void {
+  try {
+    rmSync(OVERLAY_RECORD, { force: true })
+  } catch {
+    // Best effort: a stale record is reported and replaced, not trusted.
+  }
 }
 
 /** Raw frames are kept separately from the compacted observation. Never renumber nodes. */
@@ -222,6 +303,8 @@ export class SnapshotTargets {
   private identity: SnapshotWindow | undefined
   private lines: string[] = []
   private lineByIndex = new Map<string, string>()
+  /** Screenshot pixels per window pixel, from the snapshot's own header line. */
+  private scale = 1
 
   clear(): void {
     this.app = ''
@@ -230,6 +313,11 @@ export class SnapshotTargets {
     this.identity = undefined
     this.lines = []
     this.lineByIndex.clear()
+    this.scale = 1
+  }
+
+  screenshotScale(): number {
+    return this.scale
   }
 
   /** Actions may carry a fresh snapshot too. A plain acknowledgement is not one. */
@@ -259,6 +347,14 @@ export class SnapshotTargets {
     }
     const pid = /^App=.+ \(pid (\d+)\)\r?$/m.exec(text)
     const title = /^Window: "(.*)", App: .+\.\r?$/m.exec(text)
+    // A downscaled screenshot is its own coordinate space, so the same header
+    // that tells the model how big the image is also tells the cursor how to
+    // get back to the window.
+    const scale = /^Screenshot: \d+x\d+ from \d+x\d+ \(scale ([0-9.]+)/m.exec(text)
+    if (scale) {
+      const value = Number(scale[1])
+      if (Number.isFinite(value) && value > 0) this.scale = value
+    }
     if (pid && title && this.window && this.window.x === 0 && this.window.y === 0 &&
         (text.match(/^Window: /gm)?.length === 1)) {
       const hwnd = /^Window-ID: ([1-9][0-9]*)\r?$/m.exec(text)?.[1]
@@ -300,10 +396,17 @@ export class SnapshotTargets {
     // still checks current identity, size, visibility and occlusion.
     const x = args['x'], y = args['y']
     if (this.identity?.hwnd && typeof x === 'number' && typeof y === 'number' &&
-        Number.isFinite(x) && Number.isFinite(y) && x >= 0 && y >= 0 &&
-        x < this.identity.width && y < this.identity.height) {
-      return { rect: { x: x - 0.5, y: y - 0.5, width: 1, height: 1 },
-        pointer: true, coordinateSpace: 'window', window: this.identity }
+        Number.isFinite(x) && Number.isFinite(y) && x >= 0 && y >= 0) {
+      // The model's coordinates are screenshot pixels; the window's identity is
+      // in window pixels. Convert once, here, so a downscaled capture cannot
+      // put the cursor somewhere the click did not land.
+      const windowX = x / this.scale
+      const windowY = y / this.scale
+      if (windowX < this.identity.width && windowY < this.identity.height) {
+        return { rect: { x: windowX - 0.5, y: windowY - 0.5, width: 1, height: 1 },
+          pointer: true, coordinateSpace: 'window', window: this.identity }
+      }
+      return { pointer: false }
     }
     // Coordinate tools use screenshot pixels; without a verified transform to
     // desktop pixels, show activity but never invent a cursor location.
@@ -327,6 +430,12 @@ export class DesktopOverlay implements OverlaySink {
   private reducedMotion?: boolean
   private rendered?: Record<string, unknown>
   private pending = new Map<number, () => void>()
+  private lastEndReason?: 'explicit' | 'idle'
+  private idleEnds = 0
+  private helperPid?: number
+  private stopping = false
+  /** A failed helper is retried this many times per process, then reported as failed. */
+  private restartBudget = 3
 
   constructor() {
     this.state = process.env.FBC_OVERLAY === '0' ? 'disabled' : process.platform === 'win32' ? 'idle' : 'unsupported'
@@ -336,7 +445,10 @@ export class DesktopOverlay implements OverlaySink {
     return { state: this.state, error: this.error, windows: this.windows, sessionActive: this.sessionActive,
       ...(this.displayRevision === undefined ? {} : { displayRevision: this.displayRevision }),
       ...(this.rendered === undefined ? {} : { rendered: this.rendered }),
-      ...(this.reducedMotion === undefined ? {} : { reducedMotion: this.reducedMotion }) }
+      ...(this.reducedMotion === undefined ? {} : { reducedMotion: this.reducedMotion }),
+      ...(this.helperPid === undefined ? {} : { helperPid: this.helperPid }),
+      ...(this.lastEndReason === undefined ? {} : { lastEndReason: this.lastEndReason }),
+      idleEnds: this.idleEnds }
   }
 
   private async start(): Promise<void> {
@@ -354,6 +466,14 @@ export class DesktopOverlay implements OverlaySink {
         const timer = setTimeout(() => reject(new Error('Overlay did not start within 10 seconds')), 10_000)
         const ready = () => { clearTimeout(timer); resolve() }
         const failed = (error: Error) => { clearTimeout(timer); reject(error) }
+        const owned = (): void => {
+          this.state = 'owned-elsewhere'
+          this.error =
+            'Another Freebuff Computer session already owns the desktop overlay, so this session runs without a visible border.'
+          this.sessionActive = false
+          clearTimeout(timer)
+          resolve()
+        }
         const server = createServer((socket) => {
           let buffer = ''
           let authenticated = false
@@ -375,6 +495,13 @@ export class DesktopOverlay implements OverlaySink {
                   if (typeof message['reducedMotion'] === 'boolean') this.reducedMotion = message['reducedMotion']
                   if (typeof message['displayRevision'] === 'number') this.displayRevision = message['displayRevision']
                   this.state = 'running'
+                  this.helperPid = this.child?.pid ?? undefined
+                  writeOverlayRecord({
+                    pid: this.child?.pid ?? 0,
+                    parentPid: process.pid,
+                    startedAt: new Date().toISOString(),
+                    monitors: Array.isArray(this.windows) ? this.windows.length : 0,
+                  })
                   ready()
                 } else if (typeof message['painted'] === 'number') {
                   if (message['rendered'] && typeof message['rendered'] === 'object') this.rendered = message['rendered'] as Record<string, unknown>
@@ -400,12 +527,22 @@ export class DesktopOverlay implements OverlaySink {
           const address = server.address()
           if (!address || typeof address === 'string') { failed(new Error('Overlay listener unavailable')); return }
           const script = fileURLToPath(new URL('../native/overlay.ps1', import.meta.url))
-          this.child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-File', script, '-Port', String(address.port), '-Token', token], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
+          // The parent PID is the belt to the socket's braces: a helper that
+          // cannot see its server must not keep painting.
+          this.child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-File', script, '-Port', String(address.port), '-Token', token, '-ParentPid', String(process.pid)], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
           this.child.stderr?.on('data', (chunk: Buffer) => { this.error = ((this.error ?? '') + chunk.toString()).slice(-3000) })
           this.child.once('error', failed)
           this.child.once('exit', (code) => {
-            if (this.state === 'starting') failed(new Error(this.error ?? `Overlay exited with code ${code}`))
-            else if (!this.closed) { this.state = 'failed'; this.error ??= `Overlay exited with code ${code}` }
+            if (this.stopping) return
+            if (this.state === 'starting') {
+              // Exit code 3 means another session holds the overlay mutex. That
+              // is a normal outcome, not a broken setup.
+              if (code === 3) owned()
+              else failed(new Error(this.error ?? `Overlay exited with code ${code}`))
+            } else if (!this.closed) {
+              if (code === 3) { this.state = 'owned-elsewhere'; this.sessionActive = false }
+              else { this.state = 'failed'; this.error ??= `Overlay exited with code ${code}` }
+            }
           })
         })
       })
@@ -418,7 +555,17 @@ export class DesktopOverlay implements OverlaySink {
 
   async send(event: Activity): Promise<void> {
     const ending = event.tool === 'computer_session' && event.phase === 'end'
-    if (ending && this.state !== 'running') { this.sessionActive = false; return }
+    if (ending && this.state !== 'running') {
+      this.sessionActive = false
+      if (event.label !== undefined) this.lastEndReason = event.label === 'Session idle' ? 'idle' : 'explicit'
+      return
+    }
+    // A helper that died is worth one more attempt: a permanently dead overlay
+    // for the rest of the process was the old behaviour, and it hid the failure.
+    if (!ending && (this.state === 'failed' || this.state === 'owned-elsewhere') && this.restartBudget > 0) {
+      this.restartBudget -= 1
+      await this.closeHelper()
+    }
     await this.start()
     if (this.closed || this.state !== 'running' || !this.socket) return
     this.sessionActive = !ending
@@ -435,20 +582,64 @@ export class DesktopOverlay implements OverlaySink {
     })
   }
 
-  async close(): Promise<void> {
-    this.closed = true
+  /**
+   * Hide the border and cursor without closing the helper.
+   *
+   * The border exists so a person can see that an agent is driving their
+   * machine. Once the agent has stopped calling tools, leaving it up is a
+   * claim that something is still happening.
+   */
+  async endSession(reason: 'explicit' | 'idle' = 'explicit'): Promise<boolean> {
+    const active = this.sessionActive || this.state === 'running'
+    if (!active) {
+      this.sessionActive = false
+      return false
+    }
+    await this.send({
+      ts: new Date().toISOString(),
+      tool: 'computer_session',
+      phase: 'end',
+      pointer: false,
+      label: reason === 'idle' ? 'Session idle' : 'Session ended',
+    })
     this.sessionActive = false
-    if (this.starting) await this.starting
+    this.lastEndReason = reason
+    if (reason === 'idle') this.idleEnds += 1
+    return true
+  }
+
+  /** Close the helper and reset to `idle`, so a later action can start a new one. */
+  async closeHelper(): Promise<void> {
+    if (this.starting) await this.starting.catch(() => {})
+    this.starting = undefined
+    this.stopping = true
     for (const complete of this.pending.values()) complete()
+    this.pending.clear()
     this.socket?.destroy()
+    this.socket = undefined
     this.server?.close()
+    this.server = undefined
     const child = this.child
-    if (child && child.exitCode === null) {
+    this.child = undefined
+    if (child && child.exitCode === null && child.signalCode === null) {
       await new Promise<void>((resolve) => {
         const timer = setTimeout(() => { child.kill(); resolve() }, 1500)
         child.once('exit', () => { clearTimeout(timer); resolve() })
       })
     }
+    this.sessionActive = false
+    this.windows = undefined
+    this.displayRevision = undefined
+    this.rendered = undefined
+    this.helperPid = undefined
+    this.stopping = false
+    if (!this.closed) this.state = 'idle'
+    removeOverlayRecord()
+  }
+
+  async close(): Promise<void> {
+    this.closed = true
+    await this.closeHelper()
     this.state = 'closed'
   }
 }

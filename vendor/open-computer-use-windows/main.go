@@ -87,15 +87,20 @@ type elementRecord struct {
 }
 
 type appSnapshot struct {
-	App                 appDescriptor   `json:"app"`
-	WindowTitle         string          `json:"windowTitle,omitempty"`
-	WindowID            string          `json:"windowId,omitempty"`
-	WindowBounds        *frame          `json:"windowBounds,omitempty"`
-	ScreenshotPNGBase64 string          `json:"screenshotPngBase64,omitempty"`
-	TreeLines           []string        `json:"treeLines,omitempty"`
-	FocusedSummary      string          `json:"focusedSummary,omitempty"`
-	SelectedText        string          `json:"selectedText,omitempty"`
-	Elements            []elementRecord `json:"elements,omitempty"`
+	App                 appDescriptor `json:"app"`
+	WindowTitle         string        `json:"windowTitle,omitempty"`
+	WindowID            string        `json:"windowId,omitempty"`
+	WindowBounds        *frame        `json:"windowBounds,omitempty"`
+	ScreenshotPNGBase64 string        `json:"screenshotPngBase64,omitempty"`
+	// How the frame was obtained, and the factor between its pixels and the
+	// window's. A downscaled image is its own coordinate space, so every
+	// coordinate the model sends back has to be divided by this.
+	ScreenshotCapture string          `json:"screenshotCapture,omitempty"`
+	ScreenshotScale   float64         `json:"screenshotScale,omitempty"`
+	TreeLines         []string        `json:"treeLines,omitempty"`
+	FocusedSummary    string          `json:"focusedSummary,omitempty"`
+	SelectedText      string          `json:"selectedText,omitempty"`
+	Elements          []elementRecord `json:"elements,omitempty"`
 }
 
 func (s *appSnapshot) renderedText() string {
@@ -117,6 +122,17 @@ func (s *appSnapshot) renderedText() string {
 	}
 	if s.WindowID != "" {
 		lines = append(lines, "Window-ID: "+s.WindowID)
+	}
+	// Only stated when a frame was actually captured, so a text-only read does
+	// not claim an image the model never received.
+	if s.ScreenshotPNGBase64 != "" && s.WindowBounds != nil && s.WindowBounds.Width > 0 && s.ScreenshotScale > 0 {
+		width := int(math.Round(s.WindowBounds.Width))
+		height := int(math.Round(s.WindowBounds.Height))
+		imageWidth := int(math.Round(s.WindowBounds.Width * s.ScreenshotScale))
+		imageHeight := int(math.Round(s.WindowBounds.Height * s.ScreenshotScale))
+		lines = append(lines, fmt.Sprintf("Screenshot: %dx%d from %dx%d (scale %s, %s)",
+			imageWidth, imageHeight, width, height,
+			strconv.FormatFloat(s.ScreenshotScale, 'f', -1, 64), s.ScreenshotCapture))
 	}
 	lines = append(lines, s.TreeLines...)
 	if strings.TrimSpace(s.SelectedText) != "" {
@@ -164,6 +180,9 @@ type psRequest struct {
 	TextLimit    any            `json:"text_limit,omitempty"`
 	MaxTreeNodes int            `json:"max_tree_nodes,omitempty"`
 	MaxTreeDepth int            `json:"max_tree_depth,omitempty"`
+
+	IncludeScreenshot      *bool `json:"include_screenshot,omitempty"`
+	ScreenshotMaxDimension int   `json:"screenshot_max_dimension,omitempty"`
 }
 
 type textLimit struct {
@@ -211,7 +230,12 @@ func (s *service) callTool(name string, args map[string]any) toolCallResult {
 		if err != nil {
 			return textResult(err.Error(), true)
 		}
-		return s.getAppState(requiredString(args, "app"), textLimit, maxTreeNodes, maxTreeDepth)
+		maxDimension, err := optionalPositiveInt(args, "screenshot_max_dimension")
+		if err != nil {
+			return textResult(err.Error(), true)
+		}
+		includeScreenshot := optionalBool(args, "include_screenshot")
+		return s.getAppState(requiredString(args, "app"), textLimit, maxTreeNodes, maxTreeDepth, includeScreenshot, maxDimension)
 	case "click":
 		clickMethod, err := parseClickMethod(optionalString(args, "click_method"))
 		if err != nil {
@@ -272,11 +296,14 @@ func (s *service) listApps() toolCallResult {
 	return textResult(response.Text, false)
 }
 
-func (s *service) getAppState(app string, textLimit *textLimit, maxTreeNodes, maxTreeDepth *int) toolCallResult {
+func (s *service) getAppState(app string, textLimit *textLimit, maxTreeNodes, maxTreeDepth *int, includeScreenshot *bool, maxDimension *int) toolCallResult {
 	if app == "" {
 		return textResult("Missing required argument: app", true)
 	}
-	request := psRequest{Tool: "get_app_state", App: app}
+	request := psRequest{Tool: "get_app_state", App: app, IncludeScreenshot: includeScreenshot}
+	if maxDimension != nil {
+		request.ScreenshotMaxDimension = *maxDimension
+	}
 	if textLimit != nil {
 		request.TextLimit = textLimit.runtimeValue()
 	}
@@ -329,6 +356,10 @@ func (s *service) click(app, elementIndex string, x, y *float64, clickCount int,
 			return textResult(err.Error(), true)
 		}
 		request.Element = record
+	}
+	if elementIndex == "" && x != nil && y != nil {
+		scaledX, scaledY := toWindowPoint(*x, *y, snapshot.ScreenshotScale)
+		request.X, request.Y = &scaledX, &scaledY
 	}
 	return s.actionResult(app, request)
 }
@@ -399,7 +430,19 @@ func (s *service) drag(app string, fromX, fromY, toX, toY *float64) toolCallResu
 	if snapshot == nil {
 		return textResult("No app state is available for "+app+". Run get_app_state before action tools.", true)
 	}
-	return s.actionResult(app, psRequest{Tool: "drag", App: app, FromX: fromX, FromY: fromY, ToX: toX, ToY: toY, WindowBounds: snapshot.WindowBounds})
+	startX, startY := toWindowPoint(*fromX, *fromY, snapshot.ScreenshotScale)
+	endX, endY := toWindowPoint(*toX, *toY, snapshot.ScreenshotScale)
+	return s.actionResult(app, psRequest{Tool: "drag", App: app, FromX: &startX, FromY: &startY, ToX: &endX, ToY: &endY, WindowBounds: snapshot.WindowBounds})
+}
+
+// toWindowPoint converts a coordinate in the screenshot the model was shown back
+// into the window pixel space the driver posts messages in. A scale of 0 or 1
+// means the image was not resized and the point is already correct.
+func toWindowPoint(x, y, scale float64) (float64, float64) {
+	if scale <= 0 || scale == 1 {
+		return x, y
+	}
+	return x / scale, y / scale
 }
 
 func (s *service) typeText(app, text string) toolCallResult {
@@ -540,13 +583,18 @@ func runPowerShell(request psRequest) (*psResponse, error) {
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Each call starts a fresh powershell.exe and recompiles the runtime through
+	// Add-Type. A cold, loaded machine can spend most of a 30 s budget on that
+	// alone, which showed up as a spurious ListApps timeout on CI runners. The
+	// budget is for a cold start, not for a slow operation: it never shortens a
+	// successful call, it only stops failing one that was about to answer.
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath, operationPath)
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
-		return nil, errors.New("Windows runtime timed out after 30s")
+		return nil, errors.New("Windows runtime timed out after 45s")
 	}
 	if err != nil {
 		text := strings.TrimSpace(string(output))
@@ -571,6 +619,16 @@ func requiredString(args map[string]any, key string) string {
 func optionalString(args map[string]any, key string) string {
 	value, _ := args[key].(string)
 	return value
+}
+
+// optionalBool keeps "the caller did not ask" distinct from "the caller said no",
+// so a missing field can fall back to a server-side default.
+func optionalBool(args map[string]any, key string) *bool {
+	value, ok := args[key].(bool)
+	if !ok {
+		return nil
+	}
+	return &value
 }
 
 func requiredElementIndex(args map[string]any) string {
@@ -770,10 +828,12 @@ func toolDefinitions() []toolDefinition {
 			Description: "Get the state of an already running app's key window and return a screenshot and accessibility tree. This must be called once per assistant turn before interacting with the app. This tool is part of plugin `Computer Use`.",
 			Annotations: readOnlyAnnotations(),
 			InputSchema: objectSchema(map[string]any{
-				"app":            stringProperty("App name or bundle identifier"),
-				"text_limit":     textLimitProperty("Maximum text characters to return. Use \"max\" for full text. Defaults to 500."),
-				"max_tree_nodes": positiveIntegerProperty("Maximum accessibility tree nodes to render. Defaults to 1200."),
-				"max_tree_depth": positiveIntegerProperty("Maximum accessibility tree depth to render. Defaults to 64."),
+				"app":                      stringProperty("App name or bundle identifier"),
+				"text_limit":               textLimitProperty("Maximum text characters to return. Use \"max\" for full text. Defaults to 500."),
+				"max_tree_nodes":           positiveIntegerProperty("Maximum accessibility tree nodes to render. Defaults to 1200."),
+				"max_tree_depth":           positiveIntegerProperty("Maximum accessibility tree depth to render. Defaults to 64."),
+				"include_screenshot":       boolProperty("Capture and return a PNG of the window. Defaults to false."),
+				"screenshot_max_dimension": positiveIntegerProperty("Longest edge of the returned screenshot in pixels. Defaults to 1280."),
 			}, []string{"app"}),
 		},
 		{
@@ -874,6 +934,10 @@ func integerProperty(description string) map[string]any {
 
 func positiveIntegerProperty(description string) map[string]any {
 	return map[string]any{"type": "integer", "minimum": 1, "description": description}
+}
+
+func boolProperty(description string) map[string]any {
+	return map[string]any{"type": "boolean", "description": description}
 }
 
 func textLimitProperty(description string) map[string]any {

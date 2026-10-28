@@ -216,19 +216,23 @@ test('a session that cannot paint says so instead of implying something is visib
 
   const result = await server.call('computer_session', { action: 'begin' })
   assert.notEqual(result.isError, true, 'no overlay is not an error, but it is not a visible session either')
-  assert.match(result.content[0].text, /no visible indication/)
-  assert.match(result.content[0].text, /Do not tell the user to watch the screen/)
+  // Hosts and scripts parse this result, so the explanation travels inside the
+  // payload instead of trailing it.
+  const payload = JSON.parse(result.content[0].text)
+  assert.equal(payload.state, 'unsupported')
+  assert.match(payload.note, /no visible indication/)
+  assert.match(payload.note, /Do not tell the user to watch the screen/)
 
   const disabled = { async send() {}, status: () => ({ state: 'disabled' }), async close() {} }
   const offline = await harness(t, () => text(BEFORE), disabled)
   const offResult = await offline.call('computer_session', { action: 'status' })
-  assert.match(offResult.content[0].text, /FBC_OVERLAY=0/)
+  assert.match(JSON.parse(offResult.content[0].text).note, /FBC_OVERLAY=0/)
 })
 
-test('the exact thirteen-tool surface is unchanged by verification', async (t) => {
+test('the exact fifteen-tool surface is unchanged by verification', async (t) => {
   const server = await harness(t, () => text(BEFORE))
   const listed = (await server.client.listTools()).tools
-  assert.equal(listed.length, 13)
+  assert.equal(listed.length, 15)
   for (const name of ['click', 'set_value', 'press_key', 'scroll', 'drag', 'exec_cua_subset']) {
     const tool = listed.find((entry) => entry.name === name)
     assert.match(tool.description, /verification/, `${name} must tell the model how its result is verified`)

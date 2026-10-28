@@ -30,8 +30,10 @@ Do **not** reach for it when a better route exists. In rough order:
 
 Keep the visual session open for the whole desktop task. Call `computer_session` with
 `{"action":"begin"}` before starting (the first approved desktop call also starts it).
-Do not end between tool calls or while thinking. Always call `computer_session` with
+Do not end between tool calls or while thinking. Call `computer_session` with
 `{"action":"end"}` when finished, cancelled, blocked, or handing control back to the user.
+The border also hides itself after two minutes without a tool call, so forgetting that call
+costs nothing worse than a border that disappears on its own.
 This hides the blue border and synthetic cursor without changing app permissions or undoing
 actions. `{"action":"status"}` reads visibility state without starting the renderer.
 
@@ -170,6 +172,18 @@ Optional on `click`: `click_count`, `mouse_button` (`left`/`right`/`middle`),
 | `computer_doctor` | Driver availability, contract mismatch, active policy, stderr notes. |
 | `computer_policy` | Read or change the safety policy: mode and permitted apps. |
 
+### Observation and timing
+
+| Tool | Purpose |
+| --- | --- |
+| `computer_screenshot` | Capture the window as a PNG without re-reading or renumbering the tree. `app`, optional `max_dimension`. |
+| `computer_wait` | Wait for `present`, `gone`, `text`, `value` or `idle` inside the server; `app`, `until`, `element_index`, `text` or `value`, optional `timeout_ms` and `interval_ms`. |
+
+`get_app_state` also takes `screenshot`: `auto` (default), `always` or `never`. `auto` attaches an
+image when the tree is thin, on the first read of a window, and after an action that changed nothing.
+When an image is attached the outline states its size and scale, and coordinates for `click` and
+`drag` are in that image's pixel space.
+
 ## Rules that decide whether this works
 
 1. **An `element_index` belongs to the snapshot that produced it.** Take a fresh
@@ -230,7 +244,7 @@ Start every investigation with `computer_doctor`, which prints a `status` of
 | Windows: empty snapshot, click "succeeds" but nothing happens | The target is an elevated (administrator) window, or the process is not in the signed-in desktop session. Report it as a blocker. |
 | `list_apps` shows the app but the window title is wrong | You picked the wrong window — some names appear on several windows, and shell entries like `explorer` are not the window you want. |
 | A click lands on the wrong control | The index came from a stale snapshot. Re-run `get_app_state` and act on a fresh index. |
-| A node has no name and no value | The app exposes a sparse accessibility tree. Try a different route to the same goal, or fall back to coordinates if a screenshot is available. |
+| A node has no name and no value | The app exposes a sparse accessibility tree. Take a `computer_screenshot`, pick the target from the image, then use a coordinate click. The result tells you when an outline is this thin. |
 | Nothing changes after `type_text` | The control may not have focus. Click the field first, or use `set_value`. |
 | A refusal appears | Policy mode is `allowlist` or `audit`. Call `computer_policy` to read the mode rather than working around it. |
 

@@ -32,6 +32,24 @@ export interface FbcConfig {
   defaultMaxTreeDepth: number
   /** Hard byte cap on a single snapshot returned to the model. */
   maxSnapshotBytes: number
+  /**
+   * Seconds without a tool call before the visible session hides itself.
+   *
+   * An earlier design required the model to call `computer_session` end, and a
+   * real session showed why that is not enough: 79 tool calls, zero session
+   * calls, and a blue border left on both monitors. The border is a courtesy to
+   * the person watching, so it must not depend on the model remembering.
+   * `0` disables the idle end.
+   */
+  sessionIdleSeconds: number
+  /** Seconds without a tool call before the overlay helper process is closed. `0` disables it. */
+  sessionIdleCloseSeconds: number
+  /** `auto` sends a screenshot only when the tree is thin or an action just failed to show an effect. */
+  screenshotMode: 'auto' | 'always' | 'never'
+  /** Longest edge of a screenshot, in pixels. Anthropic warns above WXGA because hosts resize. */
+  screenshotMaxDimension: number
+  /** Hard cap on one screenshot sent to the model; a larger capture is retried smaller. */
+  maxScreenshotBytes: number
 }
 
 export const DEFAULT_CONFIG: FbcConfig = {
@@ -50,6 +68,11 @@ export const DEFAULT_CONFIG: FbcConfig = {
   defaultMaxTreeNodes: 200,
   defaultMaxTreeDepth: 32,
   maxSnapshotBytes: 64 * 1024,
+  sessionIdleSeconds: 120,
+  sessionIdleCloseSeconds: 600,
+  screenshotMode: 'auto',
+  screenshotMaxDimension: 1280,
+  maxScreenshotBytes: 1_500_000,
 }
 
 export function configPath(): string {
@@ -85,7 +108,23 @@ export function loadConfig(): FbcConfig {
       .filter(Boolean)
   }
 
+  config.sessionIdleSeconds = envNumber('FBC_SESSION_IDLE_SECONDS', config.sessionIdleSeconds)
+  config.sessionIdleCloseSeconds = envNumber('FBC_SESSION_IDLE_CLOSE_SECONDS', config.sessionIdleCloseSeconds)
+  config.screenshotMaxDimension = envNumber('FBC_SCREENSHOT_MAX_DIMENSION', config.screenshotMaxDimension)
+  const envScreenshot = process.env.FBC_SCREENSHOT_MODE
+  if (envScreenshot === 'auto' || envScreenshot === 'always' || envScreenshot === 'never') {
+    config.screenshotMode = envScreenshot
+  }
+
   return config
+}
+
+/** A bad or negative number in the environment must not silently disable a safety net. */
+function envNumber(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (raw === undefined || raw.trim() === '') return fallback
+  const value = Number(raw)
+  return Number.isFinite(value) && value >= 0 ? value : fallback
 }
 
 export function saveConfig(config: FbcConfig): string {

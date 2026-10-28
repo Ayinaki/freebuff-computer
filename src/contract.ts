@@ -79,6 +79,12 @@ export const COMPUTER_TOOLS: ToolSpec[] = [
           description:
             'Maximum text characters to return per node. Use "max" for full text. Defaults to 500.',
         },
+        screenshot: {
+          enum: ['auto', 'always', 'never'],
+          type: 'string',
+          description:
+            'Whether to attach a screenshot of the window. "auto" (the default) attaches one when the accessibility tree is thin, on the first read of a window, or after an action that changed nothing visible. "never" keeps the read text-only and is the cheaper choice once you know the layout. The image is downscaled, and the outline states its size and scale; coordinates for click and drag are always in the screenshot\'s pixel space. Use computer_screenshot when you want an image without reading the tree again.',
+        },
       },
       required: ['app'],
       additionalProperties: false,
@@ -200,12 +206,58 @@ export const COMPUTER_TOOLS: ToolSpec[] = [
 ]
 
 /** Tools this server adds on top of the computer-use contract. */
-export const EXTRA_TOOL_NAMES = ['computer_doctor', 'computer_policy', 'exec_cua_subset', 'computer_session'] as const
+export const EXTRA_TOOL_NAMES = [
+  'computer_doctor',
+  'computer_policy',
+  'exec_cua_subset',
+  'computer_session',
+  'computer_screenshot',
+  'computer_wait',
+] as const
 
 export const EXTRA_TOOLS: ToolSpec[] = [
   {
+    name: 'computer_screenshot',
+    description:
+      'Capture the selected window as a PNG without re-reading or renumbering its accessibility tree, so element_index values you already hold stay valid. Use it when the tree is sparse or unhelpful (canvas, WebGL, custom-drawn panels), before a coordinate click, or when you need to see layout and colour that text cannot express. The result states the image size, the window size, and the scale factor between them; click and drag coordinates are always in the image\'s pixel space. This is a read: it changes nothing on screen. Prefer get_app_state when you also need indexes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        app: APP,
+        max_dimension: {
+          type: 'integer',
+          minimum: 320,
+          description: 'Longest edge of the returned image in pixels. Defaults to the configured screenshot size.',
+        },
+      },
+      required: ['app'],
+      additionalProperties: false,
+    },
+    mutating: false,
+  },
+  {
+    name: 'computer_wait',
+    description:
+      'Wait for the window to reach a condition, polling inside the server instead of through a chain of reads. Replaces the old "read again until it changes" loop: one call, one cheap text result, no screenshot and no tree sent back unless the condition is met. until="present" or "gone" watches an element_index; "text" waits for that element\'s line to contain the given text; "value" waits for its value to equal or contain the given value; "idle" waits for the tree to stop changing. Ends with [verification: changed] when the condition held, or [verification: unchanged] on timeout, where the application may simply be slower than the budget. Read the window first: the element must already exist in a snapshot you took.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        app: APP,
+        until: { type: 'string', enum: ['present', 'gone', 'text', 'value', 'idle'], description: 'Condition to wait for.' },
+        element_index: { type: 'string', description: 'Element to watch. Required for present, gone, text and value.' },
+        text: { type: 'string', description: 'Text the element\'s rendered line must contain when until="text".' },
+        value: { type: 'string', description: 'Value the element must read when until="value".' },
+        timeout_ms: { type: 'integer', minimum: 100, description: 'Give up after this many milliseconds. Defaults to 5000, capped at 30000.' },
+        interval_ms: { type: 'integer', minimum: 50, description: 'Poll interval in milliseconds. Defaults to 250.' },
+      },
+      required: ['app', 'until'],
+      additionalProperties: false,
+    },
+    mutating: false,
+  },
+  {
     name: 'computer_session',
-    description: 'Control the visible computer-use session, not app permissions. Use action="begin" before a multi-step desktop task; the first approved desktop call also begins automatically. The blue monitor border and agent cursor stay visible between calls while you think. Always call action="end" when finished, cancelled, blocked, or handing control back to the user. Do not end between steps. action="status" reads overlay state without starting it. Ending hides the overlay and clears its cached target; it does not undo app actions or change policy. A later approved desktop call begins a new session. Disconnecting the MCP server also removes the overlay.',
+    description: 'Control the visible computer-use session, not app permissions. Use action="begin" before a multi-step desktop task; the first approved desktop call also begins automatically. The blue monitor border and agent cursor stay visible between calls while you think. The session also hides itself after a period without tool calls, so a forgotten session never leaves a border on the screen; the next desktop action starts a new one and says so. Call action="end" when the task is over, cancelled, blocked, or handing control back, rather than waiting for that. action="status" reads overlay state, including seconds since the last call, without starting it. Ending hides the overlay and clears its cached target; it does not undo app actions or change policy. Disconnecting the MCP server also removes the overlay.',
     inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['begin', 'end', 'status'] } }, required: ['action'], additionalProperties: false },
     mutating: false,
   },
@@ -250,6 +302,19 @@ export const EXTRA_TOOLS: ToolSpec[] = [
 ]
 
 export const ALL_TOOLS: ToolSpec[] = [...COMPUTER_TOOLS, ...EXTRA_TOOLS]
+
+/**
+ * Parameters this server handles itself. The driver is never asked about them,
+ * so `verifyContract` must not read their absence as a driver that drifted.
+ */
+export const WRAPPER_ONLY_PARAMS: Record<string, string[]> = { get_app_state: ['screenshot'] }
+
+/**
+ * Parameters only a newer bundled driver advertises. Their absence means the
+ * external driver cannot suppress a capture, not that the setup is broken: the
+ * wrapper degrades instead of failing.
+ */
+export const OPTIONAL_DRIVER_PARAMS = ['get_app_state.include_screenshot', 'get_app_state.screenshot_max_dimension']
 
 export function findTool(name: string): ToolSpec | undefined {
   return ALL_TOOLS.find((t) => t.name === name)

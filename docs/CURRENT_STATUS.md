@@ -5,8 +5,23 @@ verification records retain earlier failures and the subsequent fixes.
 
 ## Implemented and verified
 
-- Exactly 13 MCP tools: the original nine, computer_doctor, computer_policy,
-  exec_cua_subset and computer_session. The exact tool-set assertion remains.
+- Exactly 15 MCP tools: the original nine, computer_doctor, computer_policy,
+  exec_cua_subset, computer_session, computer_screenshot and computer_wait. The
+  exact tool-set assertion remains.
+- The visible session closes itself. Two idle budgets hide the border (120 s) and
+  then close the helper (600 s); the helper also exits when its server process is
+  gone, and a second helper refuses to paint over the first. This replaced an
+  explicit-only end after a real run made 79 calls without ever calling it. See
+  [idle session verification](verification-session-idle.md).
+- Screenshots are controlled, scaled and reported. The bundled driver asks the
+  window to render itself (PrintWindow) before falling back to a screen copy,
+  downscales to a budget, and states the image size, window size, scale and
+  method in the outline. Coordinates are image pixels and are converted back
+  before input. Action results no longer carry an image. See
+  [screenshot verification](verification-screenshots.md).
+- computer_wait polls a condition inside the server instead of making the model
+  re-read the whole window, and a failed action now names its target, the actions
+  that target advertises and the focused element before its verdict.
 - Restricted code is parsed into a complete literal action list, preflighted
   through policy, then dispatched through the native driver. Submitted source
   never enters the unrestricted Node evaluator. Acorn was explicitly approved.
@@ -23,6 +38,11 @@ verification records retain earlier failures and the subsequent fixes.
   not a guarantee about every third-party accessibility provider.
 - Local package installation and a fresh MCP handshake passed. Package users need
   no Go installation. Source builds need Go; external-driver overrides remain.
+  scripts/verify-package.ps1 now installs the tarball with --ignore-scripts, which
+  is what proves the point: dist, native sources and both drivers are already in
+  the tarball and nothing compiles at install time. The earlier --offline flag
+  could never pass, because npm does not cache the registry metadata a dependency
+  range needs; it failed on every branch, main included.
 
 Every mutating tool result now ends with one `[verification: ...]` line separating dispatch from
 observed effect, because the driver reports success whenever a call did not throw. A `set_value`
@@ -39,6 +59,10 @@ Evidence: [multi-window and input checks](verification-multiwindow.md),
 [persistent cursor](verification-persistent-cursor.md),
 [restricted code](verification-cua-subset.md), and
 [package/overlay installation](verification-overlay-install.md).
+
+The current full suite passed 103 Node tests with no failures plus the native Go
+tests, and `npm run typecheck` passed. The older full-suite record below is kept
+as history, not as the current count.
 
 The latest recorded full suite passed 66 Node tests with no skips plus the native
 Go tests. Typecheck passed. The final hands-off multi-window rerun exited 0:
@@ -66,13 +90,24 @@ Optional foreground input is now implemented with explicit user approval. Backgr
   makes the delivery gap visible but does not close it.
 - Change detection is bounded by the nodes the model read, so a redraw that leaves the
   accessibility tree identical (canvas, 3D, video) still reports no observable change.
-- Offscreen/occluded screenshots: desktop capture can include overlapping windows.
+- Whether a Freebuff model actually receives an image content block from a tool
+  result is not established here. The driver produces a valid PNG and states its
+  geometry; delivery belongs to the host.
+- A live coordinate round trip through a downscaled screenshot: the conversion
+  and the cursor remap are unit-tested, but no disposable-window fixture clicks a
+  scaled coordinate and reads the hit point back.
+- Screenshots of occluded windows depend on the app honoring PrintWindow. The
+  fallback is a screen copy, which includes overlapping windows, and the result
+  says which method ran.
 - Virtualized-list coverage and broad third-party accessibility compatibility.
-- Hosted CI execution, Windows arm64 execution, and macOS/Linux live verification.
-  Building an arm64 binary is not evidence of running it.
+- Windows arm64 execution, and macOS/Linux live verification. Building an arm64
+  binary is not evidence of running it. Hosted CI does now run the full suite,
+  typecheck, the native overlay compile and the packaged install on Node 18, 22 and
+  24 (workflow "Verify", all three jobs green).
 - Publication is not authorized. Local installation works; npm-based examples
   requiring a published release are not yet a distribution path.
 
-No commit, push or publication has been performed. Do not discard untracked work.
-The overall goal remains incomplete while these functional and verification gaps
-remain; a narrow passing fixture does not establish complete desktop control.
+The work is committed on branch overlay-lifecycle-and-screenshots and opened as
+pull request 1. Nothing was published to npm. The overall goal remains incomplete
+while these functional and verification gaps remain; a narrow passing fixture does
+not establish complete desktop control.
