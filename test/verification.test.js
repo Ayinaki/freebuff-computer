@@ -216,13 +216,17 @@ test('a session that cannot paint says so instead of implying something is visib
 
   const result = await server.call('computer_session', { action: 'begin' })
   assert.notEqual(result.isError, true, 'no overlay is not an error, but it is not a visible session either')
-  assert.match(result.content[0].text, /no visible indication/)
-  assert.match(result.content[0].text, /Do not tell the user to watch the screen/)
+  // Hosts and scripts parse this result, so the explanation travels inside the
+  // payload instead of trailing it.
+  const payload = JSON.parse(result.content[0].text)
+  assert.equal(payload.state, 'unsupported')
+  assert.match(payload.note, /no visible indication/)
+  assert.match(payload.note, /Do not tell the user to watch the screen/)
 
   const disabled = { async send() {}, status: () => ({ state: 'disabled' }), async close() {} }
   const offline = await harness(t, () => text(BEFORE), disabled)
   const offResult = await offline.call('computer_session', { action: 'status' })
-  assert.match(offResult.content[0].text, /FBC_OVERLAY=0/)
+  assert.match(JSON.parse(offResult.content[0].text).note, /FBC_OVERLAY=0/)
 })
 
 test('the exact fifteen-tool surface is unchanged by verification', async (t) => {

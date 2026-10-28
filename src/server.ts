@@ -549,12 +549,13 @@ export function createServer(options: {
         status['state'] === 'unsupported'
           ? 'This platform has no on-screen overlay, so the session runs with no visible indication. Do not tell the user to watch the screen.'
           : status['state'] === 'disabled'
-            ? 'The activity overlay is disabled (FBC_OVERLAY=0), so the session runs with no visible indication. Do not tell the user to watch the screen.'
-            : status['state'] === 'idle'
-              ? 'The overlay starts painting on the first approved desktop action.'
-              : undefined
+            ? 'The activity overlay is disabled (FBC_OVERLAY=0), so the session runs with no visible indication. Do not tell the user to watch the screen.'                : status['state'] === 'idle'
+                  ? 'The overlay starts painting on the first approved desktop action.'
+                  : undefined
+      // Kept inside the payload: hosts and scripts parse this result as JSON.
+      if (note !== undefined) status['note'] = note
       recorder.record({ ts: new Date().toISOString(), kind: 'tool_result', tool: name, result: status })
-      return textResult(JSON.stringify(status, null, 2) + (note ? `\n\n${note}` : ''), status['state'] === 'failed')
+      return textResult(JSON.stringify(status, null, 2), status['state'] === 'failed')
     }
 
     if (name === 'computer_screenshot') {
