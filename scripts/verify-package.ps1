@@ -14,7 +14,13 @@ try {
         $_ -and !(Test-Path -LiteralPath (Join-Path $_ 'go.exe'))
     }) -join ';'
     if (Get-Command go -ErrorAction SilentlyContinue) { throw 'Go is still available; no-Go installation check is invalid' }
-    npm install --prefix $installDir $archive --offline
+    # Not --offline: npm does not cache registry metadata, so an offline install
+    # cannot resolve a dependency range even on a warm cache. What this check
+    # actually proves is that the tarball already contains everything it needs
+    # (dist, native sources, both drivers) and that no consumer needs Go or a
+    # build step. --ignore-scripts enforces that: nothing may be compiled at
+    # install time.
+    npm install --prefix $installDir $archive --ignore-scripts --no-audit --no-fund
     if ($LASTEXITCODE -ne 0) { throw "npm install exited $LASTEXITCODE" }
     $installed = Join-Path $installDir 'node_modules/freebuff-computer'
     foreach ($relative in @('native/Overlay.cs','native/overlay.ps1','dist/server.js','dist/overlay.js','dist/native/win32-x64/open-computer-use.exe','dist/native/win32-arm64/open-computer-use.exe')) {
@@ -24,7 +30,7 @@ try {
     }
     node scripts/verify-installed.mjs $installed
     if ($LASTEXITCODE -ne 0) { throw "Installed MCP verification exited $LASTEXITCODE" }
-    Write-Output "PASS: offline tarball install without Go; packaged assets match; installed MCP verification passed"
+    Write-Output "PASS: tarball install without Go or install-time build; packaged assets match; installed MCP verification passed"
     Write-Output "Archive: $archive"
     Write-Output "Installed: $installed"
 } finally {
