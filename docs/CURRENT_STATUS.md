@@ -38,6 +38,11 @@ verification records retain earlier failures and the subsequent fixes.
   not a guarantee about every third-party accessibility provider.
 - Local package installation and a fresh MCP handshake passed. Package users need
   no Go installation. Source builds need Go; external-driver overrides remain.
+  scripts/verify-package.ps1 now installs the tarball with --ignore-scripts, which
+  is what proves the point: dist, native sources and both drivers are already in
+  the tarball and nothing compiles at install time. The earlier --offline flag
+  could never pass, because npm does not cache the registry metadata a dependency
+  range needs; it failed on every branch, main included.
 
 Every mutating tool result now ends with one `[verification: ...]` line separating dispatch from
 observed effect, because the driver reports success whenever a call did not throw. A `set_value`
@@ -95,11 +100,14 @@ Optional foreground input is now implemented with explicit user approval. Backgr
   fallback is a screen copy, which includes overlapping windows, and the result
   says which method ran.
 - Virtualized-list coverage and broad third-party accessibility compatibility.
-- Hosted CI execution, Windows arm64 execution, and macOS/Linux live verification.
-  Building an arm64 binary is not evidence of running it.
+- Windows arm64 execution, and macOS/Linux live verification. Building an arm64
+  binary is not evidence of running it. Hosted CI does now run the full suite,
+  typecheck, the native overlay compile and the packaged install on Node 18, 22 and
+  24 (workflow "Verify", all three jobs green).
 - Publication is not authorized. Local installation works; npm-based examples
   requiring a published release are not yet a distribution path.
 
-No commit, push or publication has been performed. Do not discard untracked work.
-The overall goal remains incomplete while these functional and verification gaps
-remain; a narrow passing fixture does not establish complete desktop control.
+The work is committed on branch overlay-lifecycle-and-screenshots and opened as
+pull request 1. Nothing was published to npm. The overall goal remains incomplete
+while these functional and verification gaps remain; a narrow passing fixture does
+not establish complete desktop control.
