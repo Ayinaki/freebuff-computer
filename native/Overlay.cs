@@ -32,8 +32,9 @@ namespace FreebuffComputer {
     static int DisplayRevision;
     static IntPtr TargetWindow;
     static RECT TargetWindowBounds;
-    static DateTime NextGeometryCheck, ClickedAt;
+    static DateTime NextGeometryCheck, ClickedAt, NextParentCheck;
     static string TargetStatus = "none";
+    static int ParentPid;
     static IntPtr FirstWindow;
     static string Label = "Freebuff · Ready";
     static Color Accent = Color.FromArgb(59, 130, 246);
@@ -306,7 +307,20 @@ namespace FreebuffComputer {
         dragging=Dragging, pointer=Pointer ? new { x=CursorX, y=CursorY } : null } }));
     }
 
-    public static void Run(int port,string token) {
+    // A helper whose server is gone must not keep painting. The socket already
+    // signals EOF on a clean disconnect; this covers a wedged socket and a
+    // server killed without closing its end.
+    static bool ParentGone() {
+      if (ParentPid <= 0) return false;
+      try {
+        var parent = System.Diagnostics.Process.GetProcessById(ParentPid);
+        return parent.HasExited;
+      } catch (ArgumentException) { return true; }
+      catch (InvalidOperationException) { return true; }
+    }
+
+    public static void Run(int port,string token,int parentPid) {
+      ParentPid = parentPid;
       // Native window and frame coordinates are physical desktop pixels, even
       // when monitors have different scaling or negative origins.
       SetProcessDpiAwarenessContext(new IntPtr(-4));
@@ -339,6 +353,10 @@ namespace FreebuffComputer {
         timer.Tick+=delegate {
           // A wake posted while monitor windows are being replaced may target
           // a destroyed handle. The timer also drains the queue and checks EOF.
+          if (DateTime.UtcNow >= NextParentCheck) {
+            NextParentCheck = DateTime.UtcNow.AddSeconds(2);
+            if (ParentGone()) Disconnected = true;
+          }
           if(Disconnected) { Application.ExitThread(); return; }
           if(Rebuild) {
             BuildSurfaces();

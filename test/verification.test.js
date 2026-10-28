@@ -225,10 +225,10 @@ test('a session that cannot paint says so instead of implying something is visib
   assert.match(offResult.content[0].text, /FBC_OVERLAY=0/)
 })
 
-test('the exact thirteen-tool surface is unchanged by verification', async (t) => {
+test('the exact fifteen-tool surface is unchanged by verification', async (t) => {
   const server = await harness(t, () => text(BEFORE))
   const listed = (await server.client.listTools()).tools
-  assert.equal(listed.length, 13)
+  assert.equal(listed.length, 15)
   for (const name of ['click', 'set_value', 'press_key', 'scroll', 'drag', 'exec_cua_subset']) {
     const tool = listed.find((entry) => entry.name === name)
     assert.match(tool.description, /verification/, `${name} must tell the model how its result is verified`)

@@ -7,6 +7,11 @@ $ErrorActionPreference = "Stop"
 $DefaultTextLimit = 500
 $AccessibilityTreeMaxNodeCount = 1200
 $AccessibilityTreeMaxDepth = 64
+# Anthropic's own guidance warns above WXGA: a host that resizes a larger image
+# breaks the coordinate frame silently, so the driver does the resizing once and
+# reports the factor it used.
+$DefaultScreenshotMaxDimension = 1280
+$ScreenshotBase64Limit = 2600000
 
 # Set output encoding to UTF-8 to properly handle non-ASCII characters
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -56,6 +61,12 @@ public static class OCUWin32 {
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr SendMessage(IntPtr hWnd, UInt32 msg, IntPtr wParam, string lParam);
+
+    // PW_RENDERFULLCONTENT (2) asks the window's own renderer for its pixels,
+    // including DirectComposition surfaces, which a screen copy cannot recover
+    // for a window another app is covering.
+    [DllImport("user32.dll")]
+    public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdc, uint flags);
 }
 "@
 
@@ -617,23 +628,114 @@ function Render-Tree($element, $windowBounds, $TextLimit = $script:DefaultTextLi
     }
 }
 
-function Capture-WindowPngBase64($bounds) {
+function Resize-Capture($bitmap, [int]$maxDimension) {
+    $longest = [math]::Max($bitmap.Width, $bitmap.Height)
+    if ($maxDimension -le 0 -or $longest -le $maxDimension) {
+        return $bitmap
+    }
+    $factor = $maxDimension / $longest
+    $width = [math]::Max(1, [int][math]::Round($bitmap.Width * $factor))
+    $height = [math]::Max(1, [int][math]::Round($bitmap.Height * $factor))
+    $scaled = New-Object System.Drawing.Bitmap $width, $height
+    $graphics = [System.Drawing.Graphics]::FromImage($scaled)
+    try {
+        $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+        $graphics.DrawImage($bitmap, 0, 0, $width, $height)
+    } finally {
+        $graphics.Dispose()
+    }
+    $bitmap.Dispose()
+    return $scaled
+}
+
+function Test-CaptureBlank($bitmap) {
+    # A window that refused to render usually comes back as one flat colour.
+    # PrintWindow's return value alone does not promise pixels.
+    try {
+        $first = $bitmap.GetPixel(0, 0).ToArgb()
+        $stepX = [math]::Max(1, [int]($bitmap.Width / 16))
+        $stepY = [math]::Max(1, [int]($bitmap.Height / 16))
+        for ($x = 0; $x -lt $bitmap.Width; $x += $stepX) {
+            for ($y = 0; $y -lt $bitmap.Height; $y += $stepY) {
+                if ($bitmap.GetPixel($x, $y).ToArgb() -ne $first) { return $false }
+            }
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Capture-WindowPngBase64($bounds, [IntPtr]$hwnd, [int]$MaxDimension = $DefaultScreenshotMaxDimension) {
     if ($null -eq $bounds -or $bounds.width -le 0 -or $bounds.height -le 0) {
         return $null
     }
+    $width = [int][math]::Round($bounds.width)
+    $height = [int][math]::Round($bounds.height)
+    if ($width -le 0 -or $height -le 0) {
+        return $null
+    }
+    $captureMethod = 'screen'
+    $bitmap = $null
     try {
-        $bitmap = New-Object System.Drawing.Bitmap ([int][math]::Round($bounds.width)), ([int][math]::Round($bounds.height))
-        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-        $graphics.CopyFromScreen([int][math]::Round($bounds.x), [int][math]::Round($bounds.y), 0, 0, $bitmap.Size)
-        $stream = New-Object System.IO.MemoryStream
-        $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
-        $graphics.Dispose()
-        $bitmap.Dispose()
-        $bytes = $stream.ToArray()
-        $stream.Dispose()
-        return [Convert]::ToBase64String($bytes)
+        if ($hwnd -ne [IntPtr]::Zero) {
+            $candidate = New-Object System.Drawing.Bitmap $width, $height
+            $graphics = [System.Drawing.Graphics]::FromImage($candidate)
+            $hdc = $graphics.GetHdc()
+            try {
+                $printed = [OCUWin32]::PrintWindow($hwnd, $hdc, 2)
+            } finally {
+                $graphics.ReleaseHdc($hdc)
+                $graphics.Dispose()
+            }
+            if ($printed -and -not (Test-CaptureBlank $candidate)) {
+                $bitmap = $candidate
+                $captureMethod = 'printwindow'
+            } else {
+                $candidate.Dispose()
+            }
+        }
+        if ($null -eq $bitmap) {
+            # Screen copy is the fallback: it is correct for a visible window and
+            # includes anything covering an occluded one, which is why the method
+            # is reported instead of implied.
+            $bitmap = New-Object System.Drawing.Bitmap $width, $height
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $graphics.CopyFromScreen([int][math]::Round($bounds.x), [int][math]::Round($bounds.y), 0, 0, $bitmap.Size)
+            $graphics.Dispose()
+            $captureMethod = 'screen'
+        }
+        $originalWidth = $bitmap.Width
+        $bitmap = Resize-Capture $bitmap $MaxDimension
+        $scale = $bitmap.Width / $originalWidth
+        $base64 = $null
+        # A very large window can still exceed a host's tool-result limit, so
+        # shrink again rather than hand back something that gets dropped.
+        for ($attempt = 0; $attempt -lt 3; $attempt++) {
+            $stream = New-Object System.IO.MemoryStream
+            try {
+                $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+                $base64 = [Convert]::ToBase64String($stream.ToArray())
+            } finally {
+                $stream.Dispose()
+            }
+            if ($base64.Length -le $ScreenshotBase64Limit -or $bitmap.Width -le 320) { break }
+            $previousWidth = $bitmap.Width
+            $bitmap = Resize-Capture $bitmap ([int]($bitmap.Width * 0.7))
+            $scale = $scale * ($bitmap.Width / $previousWidth)
+        }
+        return [pscustomobject]@{
+            base64 = $base64
+            capture = $captureMethod
+            width = $bitmap.Width
+            height = $bitmap.Height
+            scale = [math]::Round($scale, 4)
+        }
     } catch {
         return $null
+    } finally {
+        if ($null -ne $bitmap) { $bitmap.Dispose() }
     }
 }
 
@@ -682,11 +784,15 @@ function Get-SelectedText($process, $TextLimit = $script:DefaultTextLimit) {
     return $null
 }
 
-function Build-Snapshot([string]$query, $TextLimit = $script:DefaultTextLimit, [int]$MaxTreeNodes = $script:AccessibilityTreeMaxNodeCount, [int]$MaxTreeDepth = $script:AccessibilityTreeMaxDepth) {
+function Build-Snapshot([string]$query, $TextLimit = $script:DefaultTextLimit, [int]$MaxTreeNodes = $script:AccessibilityTreeMaxNodeCount, [int]$MaxTreeDepth = $script:AccessibilityTreeMaxDepth, [bool]$IncludeScreenshot = $false, [int]$ScreenshotMaxDimension = $DefaultScreenshotMaxDimension) {
     $process = Resolve-App $query
     $element = Get-MainElement $process
     $bounds = Get-WindowBounds $process $element
     $rendered = Render-Tree $element $bounds $TextLimit $MaxTreeNodes $MaxTreeDepth
+    $capture = $null
+    if ($IncludeScreenshot) {
+        $capture = Capture-WindowPngBase64 $bounds ([IntPtr]$process.MainWindowHandle) $ScreenshotMaxDimension
+    }
     [pscustomobject]@{
         app = [pscustomobject]@{
             name = $process.ProcessName
@@ -696,7 +802,9 @@ function Build-Snapshot([string]$query, $TextLimit = $script:DefaultTextLimit, [
         windowTitle = Limit-Text $process.MainWindowTitle $TextLimit
         windowId = $process.MainWindowHandle.ToInt64().ToString()
         windowBounds = $bounds
-        screenshotPngBase64 = Capture-WindowPngBase64 $bounds
+        screenshotPngBase64 = if ($null -ne $capture) { $capture.base64 } else { $null }
+        screenshotCapture = if ($null -ne $capture) { $capture.capture } else { 'none' }
+        screenshotScale = if ($null -ne $capture) { $capture.scale } else { 1 }
         treeLines = @($rendered.lines)
         focusedSummary = Get-FocusedSummary $process $TextLimit
         selectedText = Get-SelectedText $process $TextLimit
@@ -979,7 +1087,13 @@ try {
     if ($operation.tool -eq "list_apps") {
         $response = [pscustomobject]@{ ok = $true; text = (List-Apps) }
     } elseif ($operation.tool -eq "get_app_state") {
-        $response = [pscustomobject]@{ ok = $true; snapshot = (Build-Snapshot $operation.app (Resolve-TextLimit $operation.text_limit) ([int]$operation.max_tree_nodes) ([int]$operation.max_tree_depth)) }
+        $include = $false
+        if ($null -ne $operation.include_screenshot) { $include = [bool]$operation.include_screenshot }
+        $maxDimension = $DefaultScreenshotMaxDimension
+        if ($null -ne $operation.screenshot_max_dimension -and [int]$operation.screenshot_max_dimension -gt 0) {
+            $maxDimension = [int]$operation.screenshot_max_dimension
+        }
+        $response = [pscustomobject]@{ ok = $true; snapshot = (Build-Snapshot -query $operation.app -TextLimit (Resolve-TextLimit $operation.text_limit) -MaxTreeNodes ([int]$operation.max_tree_nodes) -MaxTreeDepth ([int]$operation.max_tree_depth) -IncludeScreenshot $include -ScreenshotMaxDimension $maxDimension) }
     } else {
         $process = Resolve-App $operation.app
         $hwnd = [IntPtr]$process.MainWindowHandle
@@ -1073,7 +1187,12 @@ try {
         }
 
         Start-Sleep -Milliseconds 120
-        $response = [pscustomobject]@{ ok = $true; snapshot = (Build-Snapshot $operation.app) }
+        # An action's trailing snapshot is what verification compares, so it is
+        # text by default: a model that needs pixels asks for a screenshot and
+        # pays for exactly that, instead of every click carrying a full frame.
+        $include = $false
+        if ($null -ne $operation.include_screenshot) { $include = [bool]$operation.include_screenshot }
+        $response = [pscustomobject]@{ ok = $true; snapshot = (Build-Snapshot -query $operation.app -IncludeScreenshot $include) }
     }
 } catch {
     $message = $_.Exception.Message

@@ -271,13 +271,13 @@ func TestWindowsRuntimeTextLimitSupportsMaxMode(t *testing.T) {
 	if !strings.Contains(windowsRuntimeScript, "$DefaultTextLimit = 500") {
 		t.Fatal("Windows runtime should define the shared 500 character text limit")
 	}
-	if !strings.Contains(windowsRuntimeScript, "Build-Snapshot $operation.app (Resolve-TextLimit $operation.text_limit)") {
+	if !strings.Contains(windowsRuntimeScript, "-TextLimit (Resolve-TextLimit $operation.text_limit)") {
 		t.Fatal("Windows get_app_state should pass text_limit into snapshot rendering")
 	}
 	if !strings.Contains(windowsRuntimeScript, "$Value -is [string] -and $Value.Trim().ToLowerInvariant() -eq \"max\"") {
 		t.Fatal("Windows runtime should support max text limit mode")
 	}
-	if !strings.Contains(windowsRuntimeScript, "([int]$operation.max_tree_nodes) ([int]$operation.max_tree_depth)") {
+	if !strings.Contains(windowsRuntimeScript, "-MaxTreeNodes ([int]$operation.max_tree_nodes) -MaxTreeDepth ([int]$operation.max_tree_depth)") {
 		t.Fatal("Windows get_app_state should pass tree budget into snapshot rendering")
 	}
 	if !strings.Contains(windowsRuntimeScript, "$maxLength = if ($null -eq $TextLimit) { -1 } else { [int]$TextLimit + 1 }") {
@@ -294,6 +294,57 @@ func TestWindowsRuntimeTreeBudgetDefaultsMatchMacOS(t *testing.T) {
 	}
 	if !strings.Contains(windowsRuntimeScript, "$script:nextIndex -ge $script:MaxTreeNodes -or $depth -gt $script:MaxTreeDepth") {
 		t.Fatal("Windows runtime should use shared tree budget constants while rendering")
+	}
+}
+
+// A downscaled screenshot is a coordinate space of its own. If the driver
+// forgets the factor, a click lands somewhere the model never pointed at.
+func TestScreenshotCoordinatesFollowTheReportedScale(t *testing.T) {
+	cases := []struct{ x, y, scale, wantX, wantY float64 }{
+		{100, 50, 1, 100, 50},
+		{100, 50, 0, 100, 50},
+		{800, 480, 0.8, 1000, 600},
+		{640, 480, 0.5, 1280, 960},
+	}
+	for _, c := range cases {
+		gotX, gotY := toWindowPoint(c.x, c.y, c.scale)
+		if gotX != c.wantX || gotY != c.wantY {
+			t.Fatalf("toWindowPoint(%v,%v,%v) = (%v,%v), want (%v,%v)", c.x, c.y, c.scale, gotX, gotY, c.wantX, c.wantY)
+		}
+	}
+}
+
+func TestScreenshotCaptureReportsItsMethodAndSize(t *testing.T) {
+	// PrintWindow asks the window for its own pixels; a screen copy of an
+	// occluded window returns whatever is covering it. Both are allowed, and the
+	// result says which one ran.
+	for _, want := range []string{"[OCUWin32]::PrintWindow($hwnd, $hdc, 2)", "$captureMethod = 'printwindow'", "$captureMethod = 'screen'"} {
+		if !strings.Contains(windowsRuntimeScript, want) {
+			t.Fatalf("Windows runtime should document its capture path, missing %q", want)
+		}
+	}
+	if !strings.Contains(windowsRuntimeScript, "scale = [math]::Round($scale, 4)") {
+		t.Fatal("Windows runtime should report the screenshot scale it applied")
+	}
+	if !strings.Contains(windowsRuntimeScript, "-IncludeScreenshot $include") {
+		t.Fatal("Windows runtime should let the caller decide whether an image is captured")
+	}
+}
+
+func TestSnapshotRendersTheScreenshotHeaderOnlyWithAnImage(t *testing.T) {
+	withImage := &appSnapshot{
+		App:                 appDescriptor{Name: "fixture", PID: 1, BundleIdentifier: "fixture@window:1:2:3"},
+		WindowBounds:        &frame{X: 0, Y: 0, Width: 1600, Height: 1200},
+		ScreenshotPNGBase64: "AAAA",
+		ScreenshotCapture:   "printwindow",
+		ScreenshotScale:     0.8,
+	}
+	if text := withImage.renderedText(); !strings.Contains(text, "Screenshot: 1280x960 from 1600x1200 (scale 0.8, printwindow)") {
+		t.Fatalf("a captured frame must state its size and scale, got %q", text)
+	}
+	without := &appSnapshot{App: appDescriptor{Name: "fixture", PID: 1, BundleIdentifier: "fixture@window:1:2:3"}}
+	if text := without.renderedText(); strings.Contains(text, "Screenshot:") {
+		t.Fatalf("a text-only read must not claim an image, got %q", text)
 	}
 }
 

@@ -1,7 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { Tool } from '@modelcontextprotocol/sdk/types.js'
-import { COMPUTER_TOOLS } from './contract.js'
+import { COMPUTER_TOOLS, OPTIONAL_DRIVER_PARAMS, WRAPPER_ONLY_PARAMS } from './contract.js'
 import { driverCommand, platformLabel } from './config.js'
 
 export interface DriverContentBlock {
@@ -49,6 +49,7 @@ export class ComputerDriver {
   private starting: Promise<void> | null = null
   private tools: Tool[] = []
   private stderrLines: string[] = []
+  private paramCache = new Map<string, boolean>()
   private lastError: string | undefined
 
   constructor(private readonly connectTimeoutMs = 30_000) {}
@@ -144,6 +145,39 @@ export class ComputerDriver {
     return new Error(`${message}${hint}`)
   }
 
+  /**
+   * Whether the connected driver accepts an optional parameter.
+   *
+   * This project wraps a third-party driver that can be newer or older than the
+   * wrapper. Passing a parameter the driver does not declare is how a working
+   * setup turns into a runtime error, so the wrapper asks first.
+   */
+  async supportsParam(tool: string, param: string): Promise<boolean> {
+    const key = `${tool}.${param}`
+    const cached = this.paramCache.get(key)
+    if (cached !== undefined) return cached
+    let supported = false
+    try {
+      const advertised = await this.listDriverTools()
+      const definition = advertised.find((entry) => entry.name === tool)
+      supported = Boolean(definition?.inputSchema?.properties?.[param])
+    } catch {
+      supported = false
+    }
+    this.paramCache.set(key, supported)
+    return supported
+  }
+
+  /** Whether the connected driver advertises a whole tool. */
+  async supportsTool(name: string): Promise<boolean> {
+    try {
+      const advertised = await this.listDriverTools()
+      return advertised.some((entry) => entry.name === name)
+    } catch {
+      return false
+    }
+  }
+
   async listDriverTools(): Promise<Tool[]> {
     await this.start()
     if (this.tools.length === 0) {
@@ -191,7 +225,10 @@ export class ComputerDriver {
         continue
       }
       const actualProps = (actual.inputSchema?.properties ?? {}) as Record<string, unknown>
+      const wrapperOnly = new Set(WRAPPER_ONLY_PARAMS[spec.name] ?? [])
       for (const param of Object.keys(spec.inputSchema.properties ?? {})) {
+        if (wrapperOnly.has(param)) continue
+        if (OPTIONAL_DRIVER_PARAMS.includes(`${spec.name}.${param}`)) continue
         if (!(param in actualProps)) missingParams.push(`${spec.name}.${param}`)
       }
     }
@@ -212,6 +249,7 @@ export class ComputerDriver {
     this.client = null
     this.transport = null
     this.tools = []
+    this.paramCache.clear()
     if (transport) await transport.close().catch(() => {})
   }
 }

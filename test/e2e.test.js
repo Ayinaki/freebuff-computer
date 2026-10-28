@@ -167,7 +167,18 @@ test('initializes and advertises the Codex-compatible tool surface', async () =>
     }
     assert.ok(names.includes('computer_doctor'))
     assert.ok(names.includes('computer_policy'))
-    assert.deepEqual(names.slice().sort(), [...CODEX_TOOLS, 'computer_doctor', 'computer_policy', 'exec_cua_subset', 'computer_session'].sort())
+    assert.deepEqual(
+      names.slice().sort(),
+      [
+        ...CODEX_TOOLS,
+        'computer_doctor',
+        'computer_policy',
+        'exec_cua_subset',
+        'computer_session',
+        'computer_screenshot',
+        'computer_wait',
+      ].sort(),
+    )
 
     for (const tool of listed) {
       assert.ok(tool.description && tool.description.length > 20, `${tool.name} needs a description`)

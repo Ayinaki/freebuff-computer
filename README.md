@@ -207,9 +207,19 @@ After you have used the agent for a while:
 fbc stats
 ```
 
-This summarises the recorded sessions: tool calls, refusals, and how many bytes of accessibility
-snapshots were sent to the model versus how many were actually necessary. If a session felt slow or
+This summarises the recorded sessions: tool calls, refusals, the bytes of accessibility snapshots
+sent to the model versus how many were actually necessary, how many screenshots went out and how
+large they were, and how many visible sessions ended on their own. If a session felt slow or
 expensive, this is where you find out why.
+
+```bash
+fbc cleanup
+```
+
+`fbc cleanup` closes an overlay helper that is still painting after its session ended. The idle
+watchdog makes this rare, and it is the manual hatch for a crashed server, a client that never
+closed the connection, or a border left over from a build that predates the watchdog. It only ever
+stops a process whose command line is this project's `overlay.ps1`.
 
 ## Tools
 
@@ -228,6 +238,30 @@ expensive, this is where you find out why.
 | `computer_policy` | Read or change the safety policy. A change is written to the config file, so it survives a restart. |
 | `exec_cua_subset` | Execute a statically enumerable batch written in a restricted `cua` JavaScript subset. |
 | `computer_session` | Begin, inspect or end the persistent visual computer-use session. |
+| `computer_screenshot` | Capture a window as a PNG without renumbering its element indexes. |
+| `computer_wait` | Wait for an element, a value, or a quiet tree inside the server instead of re-reading in a loop. |
+
+### Screenshots
+
+`get_app_state` accepts `screenshot` with `auto`, `always`, or `never`. `auto`, the default, sends an
+image when the accessibility tree is thin (under eight nodes), on the first read of a window, and
+after an action that changed nothing visible. Those are the moments an outline is not enough to act
+on. `never` is the cheaper choice once the layout is known, and `computer_screenshot` gets an image
+without re-reading the tree or invalidating indexes.
+
+A capture is downscaled to 1280 pixels on the longest edge by default, and the outline states both
+sizes and the factor between them:
+
+```
+Screenshot: 1280x960 from 1600x1200 (scale 0.8, printwindow)
+```
+
+Coordinates for `click` and `drag` are always in the image's pixel space, and the driver converts
+them back using that same factor before posting input. The method is reported because it matters:
+`printwindow` asks the window to draw itself, so an occluded window still captures correctly, while
+`screen` is a screen copy that includes whatever is covering the window. `include_screenshot=false`
+skips the capture entirely on a bundled driver; a driver that does not advertise the parameter still
+captures, and the wrapper drops the image it did not ask for.
 
 ### Reading an action result
 
@@ -264,7 +298,8 @@ does not close browser tabs, but it does invalidate the MCP session's observatio
 Windows value-based typing appends through the bundled background accessibility client when no native edit handle is available. It preserves whitespace but does not generate per-key events. Prefer indexed `set_value` when choosing among fields; use `press_key` separately to submit. Set `OPEN_COMPUTER_USE_WINDOWS_ALLOW_UIA_TEXT_FALLBACK=0` in the MCP environment to opt out.
 
 The first nine names keep the native driver contract. This project adds diagnostics, policy
-inspection, the restricted code surface and session visibility, for an exact total of thirteen tools.
+inspection, the restricted code surface, session visibility, screenshots and waiting, for an exact
+total of fifteen tools.
 
 ### Restricted code surface
 
@@ -323,7 +358,7 @@ npm test
 node scripts/verify-cua-subset.mjs Notepad
 ```
 
-The verification script starts a fresh server in audit mode and asserts all thirteen tool names.
+The verification script starts a fresh server in audit mode and asserts all fifteen tool names.
 Without an app argument it lists apps through `exec_cua_subset`.
 
 ## Visible activity on Windows
@@ -342,13 +377,17 @@ starts at the primary monitor's centre and glides from its current position to e
 before the driver acts. A successful click has a brief pulse. Reads, keyboard actions, errors and
 unknown targets leave it at its resting position; they do not invent a new target. There is no
 target rectangle. Reduced motion places the cursor directly at verified targets.
-Always call `computer_session` with `{"action":"end"}`
+The border also hides itself after two minutes without a tool call. That behaviour exists because a
+real session made 79 tool calls, never called `computer_session`, and left a border on two monitors
+after the user had moved on. The next desktop action starts a new session and the result says so.
+Prefer calling `computer_session` with `{"action":"end"}`
 when finished, cancelled, blocked, or returning control to the user. Do not end between steps.
 This hides all monitor overlays and clears cached target geometry; it does not change policy or
 undo app actions. `{"action":"status"}` reads visibility without starting the helper. The next
 approved native call begins a new visible session automatically. Disconnecting the MCP server
-also removes the overlay. There is no short idle timer: a host that keeps its server alive must
-send the explicit end signal when the task ends.
+also removes the overlay. The idle budget is two minutes by default and is configurable; nothing
+about it changes policy or undoes an action, it only stops the border from claiming work is still
+happening.
 
 Events are pushed over an authenticated loopback connection from the trajectory recorder; there
 is no watched file. The overlay receives one rectangle, app, action, timestamp and phase, plus
@@ -380,6 +419,10 @@ report an overlay failure.
 ```bash
 node scripts/verify-native-overlay.mjs
 node scripts/verify-overlay-exit.mjs
+node scripts/verify-overlay-parent-exit.mjs
+node scripts/verify-overlay-singleton.mjs
+node scripts/verify-overlay-idle.mjs
+node scripts/verify-screenshot-capture.mjs
 node scripts/verify-window-target.mjs vivaldi
 ```
 
@@ -408,7 +451,7 @@ centre-start and always-visible behavior. For a more demanding Freebuff run, use
 
 To check a locally installed tarball, pass its package directory to
 `node scripts/verify-installed.mjs <installed-package-root>`. This creates an isolated workspace,
-generates a standalone agent, launches its exact MCP configuration, asserts all thirteen tools,
+generates a standalone agent, launches its exact MCP configuration, asserts all fifteen tools,
 and runs read-only app discovery with the packaged renderer. It does not run a Freebuff model.
 The pixel probe also accepts that directory: `node scripts/verify-native-overlay.mjs <installed-package-root>`.
 
@@ -465,6 +508,11 @@ The config lives at `~/.freebuff-computer/config.json` and is created by `fbc se
 | `defaultMaxTreeNodes` | `200` | Accessibility tree nodes requested by default. The main size lever; the driver's own default is 1200. |
 | `defaultMaxTreeDepth` | `32` | Accessibility tree depth requested by default. The driver's own default is 64. |
 | `maxSnapshotBytes` | `65536` | Hard cap on a single snapshot sent to the model. When it is hit, the outline says so explicitly. |
+| `sessionIdleSeconds` | `120` | Seconds without a tool call before the visible session hides itself. `0` disables it. |
+| `sessionIdleCloseSeconds` | `600` | Seconds without a tool call before the overlay helper process is closed. `0` disables it. |
+| `screenshotMode` | `"auto"` | `auto`, `always`, or `never`. |
+| `screenshotMaxDimension` | `1280` | Longest edge of a returned screenshot, in pixels. |
+| `maxScreenshotBytes` | `1500000` | Hard cap on one screenshot. A larger capture is retried smaller, then refused. |
 
 Environment variables:
 
@@ -474,6 +522,10 @@ Environment variables:
 | `FBC_DRIVER_CMD` | Override the driver command, for example `FBC_DRIVER_CMD="node ./my-driver.js"`. Mainly for testing a different driver. |
 | `FBC_POLICY_MODE` | Pin the session to `open`, `allowlist`, or `audit` without editing the config file. |
 | `FBC_ALLOWED_APPS` | Comma-separated allowlist, for example `FBC_ALLOWED_APPS="Notepad,Spotify"`. Overrides `allowedApps`. |
+| `FBC_SESSION_IDLE_SECONDS` | Override `sessionIdleSeconds` without editing the config file. |
+| `FBC_SESSION_IDLE_CLOSE_SECONDS` | Override `sessionIdleCloseSeconds`. |
+| `FBC_SCREENSHOT_MODE` | Override `screenshotMode`. |
+| `FBC_SCREENSHOT_MAX_DIMENSION` | Override `screenshotMaxDimension`. |
 
 ## Architecture
 
@@ -520,6 +572,15 @@ artifacts.
 ## Known gaps
 
 Honest list of what is not done yet.
+
+- **Image delivery into a Freebuff chat is not yet confirmed end to end.** MCP allows an image
+  content block in a tool result, and this server sends one, but whether a given Freebuff model
+  receives it is a host property this repository cannot prove. The fallback is already in place:
+  the outline states the capture's size and scale, `computer_screenshot` writes the PNG under
+  `~/.freebuff-computer/screenshots/` and names the path, and a sparse tree says so explicitly.
+- **Mixed-DPI screenshots are unverified.** The capture compares the bitmap it produced with the
+  window rectangle before reporting a scale, but the measured desktop reports scale 1 on both
+  monitors. A mixed-DPI machine still needs a run.
 
 - **Not published to npm.** The `npx -y freebuff-computer` examples and the monorepo agent's
   registration still require publication. The repository registration and `setup` output use local
