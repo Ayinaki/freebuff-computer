@@ -583,13 +583,18 @@ func runPowerShell(request psRequest) (*psResponse, error) {
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Each call starts a fresh powershell.exe and recompiles the runtime through
+	// Add-Type. A cold, loaded machine can spend most of a 30 s budget on that
+	// alone, which showed up as a spurious ListApps timeout on CI runners. The
+	// budget is for a cold start, not for a slow operation: it never shortens a
+	// successful call, it only stops failing one that was about to answer.
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath, operationPath)
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
-		return nil, errors.New("Windows runtime timed out after 30s")
+		return nil, errors.New("Windows runtime timed out after 45s")
 	}
 	if err != nil {
 		text := strings.TrimSpace(string(output))
